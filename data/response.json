@@ -1,0 +1,33 @@
+{
+    "analysis_id": "anl_2025_0001",
+    "years": ["2020", "2021"],
+    "clusters": [
+      { "id": 0, "name": "Klaster 0", "color": "text-red-500", "bgColor": "bg-red-500", "hexColor": "#EF4444" },
+      { "id": 1, "name": "Klaster 1", "color": "text-green-500", "bgColor": "bg-green-500", "hexColor": "#22C55E" },
+      { "id": 2, "name": "Klaster 2", "color": "text-yellow-500", "bgColor": "bg-yellow-500", "hexColor": "#EAB308" }
+    ],
+    "cities": [
+      { "name": "Jakarta Pusat", "lat": -6.175, "lon": 106.828, "clusterId": 0 },
+      { "name": "Kota Bandung", "lat": -6.917, "lon": 107.619, "clusterId": 0 },
+      { "name": "Kota Surabaya", "lat": -7.257, "lon": 112.752, "clusterId": 0 },
+      { "name": "Kota Medan", "lat": 3.595, "lon": 98.672, "clusterId": 1 },
+      { "name": "Kota Palembang", "lat": -2.976, "lon": 104.775, "clusterId": 1 },
+      { "name": "Kota Pontianak", "lat": -0.022, "lon": 109.33, "clusterId": 2 }
+    ],
+    "trends": {
+      "Beras": [
+        {
+          "clusterId": 0,
+          "data": [14500,14600,14650,14700,14750,14800,14820,14840,14860,14880,14900,14920,14940,14960,14980,15000,15020,15040,15060,15080,15100,15120,15140,15160]
+        },
+        {
+          "clusterId": 1,
+          "data": [12500,12520,12540,12560,12580,12600,12610,12620,12630,12640,12650,12660,12670,12680,12690,12700,12710,12720,12730,12740,12750,12760,12770,12780]
+        },
+        {
+          "clusterId": 2,
+          "data": [13500,13530,13560,13590,13620,13650,13640,13630,13620,13610,13600,13610,13620,13650,13680,13710,13740,13770,13800,13810,13820,13830,13840,13850]
+        }
+      ]
+    }
+  }
