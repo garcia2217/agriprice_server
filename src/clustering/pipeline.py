@@ -196,6 +196,8 @@ class ClusteringAnalysisPipeline:
         # Extract feature matrix and city names
         X, cities = self.input_handler.prepare_feature_matrix(scaled_df)
         
+        
+        
         # Validate inputs
         validation = self.input_handler.validate_clustering_inputs(X, cities, k)
         if not validation['valid']:
@@ -220,11 +222,21 @@ class ClusteringAnalysisPipeline:
             if return_format == "api":
                 # Build frontend-friendly response including clusters palette and trends
                 analysis_id = f"anl_{int(time.time())}"
+                
+                # Create merged_df with cluster labels for radar features
+                labels = list(result.labels)
+                cluster_map = pd.DataFrame({
+                    "City": scaled_df["City"],
+                    "Cluster": labels
+                })
+                merged_df = preprocessed_df.merge(cluster_map, on="City", how="left")
+                
                 return self.api_formatter.format_frontend_response(
                     analysis_id=analysis_id,
                     labels=result.labels,
                     cities=cities,
-                    preprocessed_df=preprocessed_df
+                    preprocessed_df=preprocessed_df,
+                    merged_df=merged_df
                 )
             elif return_format == "detailed":
                 return self.api_formatter.format_detailed_response(

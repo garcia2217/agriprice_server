@@ -100,12 +100,80 @@ class APIResponseFormatter:
 
         return trends
 
+    def format_radar_features(
+        self,
+        merged_df: pd.DataFrame,
+        labels: np.ndarray,
+        cities: List[str]
+    ) -> Dict[str, Any]:
+        """
+        Calculate radar chart features from preprocessed data with cluster labels.
+        
+        Args:
+            merged_df: Preprocessed DataFrame with cluster labels already added
+            labels: Cluster assignment labels
+            cities: List of city names
+            
+        Returns:
+            Dictionary with radar features: {cluster_id: {commodity: normalized_value}}
+        """
+        if merged_df is None or merged_df.empty:
+            return {}
+        
+        # Check if we have the required columns
+        required_cols = ['Cluster', 'Commodity', 'Price']
+        if not all(col in merged_df.columns for col in required_cols):
+            logger.warning("Missing required columns for radar features calculation")
+            return {}
+        
+        # Get unique commodities
+        commodities = merged_df['Commodity'].unique()
+        if len(commodities) < 3:
+            logger.info(f"Less than 3 commodities ({len(commodities)}), skipping radar features")
+            return {}
+        
+        # Calculate average price per cluster and commodity
+        cluster_commodity_avg = merged_df.groupby(['Cluster', 'Commodity'])['Price'].mean()
+        
+        # Normalize per commodity across clusters (0-1 scale)
+        radar_features = {}
+        
+        for cluster_id in sorted(merged_df['Cluster'].unique()):
+            cluster_data = {}
+            
+            for commodity in commodities:
+                # Get all values for this commodity across all clusters
+                commodity_values = []
+                for cid in merged_df['Cluster'].unique():
+                    if (cid, commodity) in cluster_commodity_avg.index:
+                        commodity_values.append(cluster_commodity_avg[(cid, commodity)])
+                
+                if len(commodity_values) > 1:  # Need at least 2 clusters to normalize
+                    min_val = min(commodity_values)
+                    max_val = max(commodity_values)
+                    
+                    if max_val > min_val:  # Avoid division by zero
+                        current_val = cluster_commodity_avg.get((cluster_id, commodity), 0)
+                        normalized_val = (current_val - min_val) / (max_val - min_val)
+                    else:
+                        normalized_val = 0.5  # All values are the same
+                else:
+                    normalized_val = 0.5  # Only one cluster
+                
+                cluster_data[commodity] = round(normalized_val, 3)
+            
+            radar_features[str(cluster_id)] = cluster_data
+        
+        logger.info(f"Calculated radar features for {len(radar_features)} clusters and {len(commodities)} commodities")
+        return radar_features
+
     def format_frontend_response(
         self,
         analysis_id: str,
         labels: np.ndarray,
         cities: List[str],
         preprocessed_df: Optional[pd.DataFrame] = None,
+        merged_df: Optional[pd.DataFrame] = None,
         commodities: Optional[List[str]] = None,
         years: Optional[List[int]] = None,
         clusters_palette: Optional[List[Dict[str, Any]]] = None
@@ -163,13 +231,28 @@ class APIResponseFormatter:
                 years=[int(y) for y in years_list] if years_list else None
             )
 
-        return {
+        # Radar features (optional if merged_df provided)
+        radar_features: Dict[str, Any] = {}
+        if merged_df is not None and not merged_df.empty:
+            radar_features = self.format_radar_features(
+                merged_df=merged_df,
+                labels=labels,
+                cities=cities
+            )
+
+        response = {
             "analysis_id": analysis_id,
             "years": years_list,
             "clusters": clusters_palette,
             "cities": assignments,
             "trends": trends
         }
+        
+        # Only add radarFeatures if we have data
+        if radar_features:
+            response["radarFeatures"] = radar_features
+
+        return response
     def format_cluster_assignments(
         self,
         cities: List[str],

@@ -133,7 +133,8 @@ def analyze_view(request):
         feature_engineering_results = feature_engineering_pipeline.run_full_pipeline(
             input_data=consolidated_df
         )
-            
+        
+        # print(json.dumps(feature_engineering_results, indent=4))
         scaled_df = feature_engineering_results.get("scaled_features").get("robust")
         preprocessed_data = feature_engineering_results.get("consolidated")
         
