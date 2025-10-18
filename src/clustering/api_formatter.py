@@ -10,6 +10,7 @@ import pandas as pd
 import numpy as np
 from scipy.stats import pearsonr
 from sklearn.decomposition import PCA
+from sklearn.metrics import silhouette_samples, silhouette_score, davies_bouldin_score
 
 logger = logging.getLogger(__name__)
 
@@ -543,6 +544,70 @@ class APIResponseFormatter:
             logger.error(f"Error calculating PCA data: {e}")
             return {}
 
+    def format_silhouette_data(
+        self,
+        scaled_features: pd.DataFrame,
+        labels: np.ndarray,
+        cities: List[str]
+    ) -> Dict[str, Any]:
+        """
+        Calculate silhouette scores for bar chart visualization.
+        
+        Args:
+            scaled_features: Scaled feature matrix used for clustering
+            labels: Cluster assignment labels
+            cities: List of city names
+            
+        Returns:
+            Dictionary with silhouette data for bar chart
+        """
+        if scaled_features is None or scaled_features.empty:
+            return {}
+        
+        if len(scaled_features) != len(labels) or len(scaled_features) != len(cities):
+            logger.warning("Mismatch in data dimensions for silhouette calculation")
+            return {}
+        
+        try:
+            # Remove City column if present (for feature matrix)
+            feature_matrix = scaled_features.copy()
+            if "City" in feature_matrix.columns:
+                feature_matrix = feature_matrix.drop("City", axis=1)
+            
+            # Calculate overall clustering metrics
+            overall_silhouette = silhouette_score(feature_matrix, labels)
+            davies_bouldin = davies_bouldin_score(feature_matrix, labels)
+            
+            # Calculate individual silhouette scores
+            individual_scores = silhouette_samples(feature_matrix, labels)
+            
+            # Create city silhouette data with sorting
+            city_silhouettes = []
+            for i, (city, score, cluster_id) in enumerate(zip(cities, individual_scores, labels)):
+                city_silhouettes.append({
+                    "city": city,
+                    "silhouette": float(score),
+                    "clusterId": int(cluster_id)
+                })
+            
+            # Sort by silhouette score (highest first)
+            city_silhouettes.sort(key=lambda x: x["silhouette"], reverse=True)
+            
+            silhouette_data = {
+                "clusteringMetrics": {
+                    "overall_silhouette": float(overall_silhouette),
+                    "davies_bouldin": float(davies_bouldin)
+                },
+                "citySilhouettes": city_silhouettes
+            }
+            
+            logger.info(f"Calculated silhouette data for {len(city_silhouettes)} cities")
+            return silhouette_data
+            
+        except Exception as e:
+            logger.error(f"Error calculating silhouette data: {e}")
+            return {}
+
     def format_frontend_response(
         self,
         analysis_id: str,
@@ -644,6 +709,15 @@ class APIResponseFormatter:
                 cities=cities
             )
 
+        # Silhouette data (optional if scaled features provided)
+        silhouette_data: Dict[str, Any] = {}
+        if scaled_features is not None and not scaled_features.empty:
+            silhouette_data = self.format_silhouette_data(
+                scaled_features=scaled_features,
+                labels=labels,
+                cities=cities
+            )
+
         response = {
             "analysis_id": analysis_id,
             "years": years_list,
@@ -667,6 +741,10 @@ class APIResponseFormatter:
         # Only add pcaData if we have data
         if pca_data:
             response["pcaData"] = pca_data
+        
+        # Only add silhouette data if we have data
+        if silhouette_data:
+            response.update(silhouette_data)  # Add clusteringMetrics and citySilhouettes directly
 
         return response
     def format_cluster_assignments(
