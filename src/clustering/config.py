@@ -6,7 +6,7 @@ This module provides configuration classes for the clustering analysis pipeline.
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Dict, Any, Union
+from typing import List, Optional, Dict, Any, Union, Literal
 # import yaml
 import json
 
@@ -59,6 +59,9 @@ class ClusteringPipelineConfig:
     # API configuration
     api_mode: bool = False
     return_format: str = "full"  # "full", "api", "simple"
+    
+    # Correlation analysis configuration
+    correlation_mode: Literal["global", "per_cluster"] = "global"
     
     # Visualization configuration
     figure_size: tuple = (16, 10)

@@ -8,6 +8,8 @@ import logging
 from typing import List, Dict, Any, Optional
 import pandas as pd
 import numpy as np
+from scipy.stats import pearsonr
+from sklearn.decomposition import PCA
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +169,380 @@ class APIResponseFormatter:
         logger.info(f"Calculated radar features for {len(radar_features)} clusters and {len(commodities)} commodities")
         return radar_features
 
+    def format_boxplot_data(
+        self,
+        merged_df: pd.DataFrame,
+        labels: np.ndarray,
+        cities: List[str]
+    ) -> Dict[str, Any]:
+        """
+        Calculate boxplot data from preprocessed data with cluster labels.
+        
+        Args:
+            merged_df: Preprocessed DataFrame with cluster labels already added
+            labels: Cluster assignment labels
+            cities: List of city names
+            
+        Returns:
+            Dictionary with boxplot data structure
+        """
+        if merged_df is None or merged_df.empty:
+            return {}
+        
+        # Check if we have the required columns
+        required_cols = ['Cluster', 'Commodity', 'Price', 'Date']
+        if not all(col in merged_df.columns for col in required_cols):
+            logger.warning("Missing required columns for boxplot data calculation")
+            return {}
+        
+        # Ensure Date is datetime
+        df = merged_df.copy()
+        df['Date'] = pd.to_datetime(df['Date'])
+        df['Year'] = df['Date'].dt.year
+        
+        # Get unique values and convert to native Python types
+        commodities = [str(c) for c in sorted(df['Commodity'].unique())]
+        clusters = [int(c) for c in sorted(df['Cluster'].unique())]
+        years = [int(y) for y in sorted(df['Year'].unique())]
+        
+        if len(commodities) == 0 or len(clusters) == 0 or len(years) == 0:
+            logger.warning("Insufficient data for boxplot calculation")
+            return {}
+        
+        # Initialize data structure
+        data = {}
+        statistics = {}
+        
+        for commodity in commodities:
+            data[commodity] = {}
+            statistics[commodity] = {}
+            
+            for year in years:
+                data[commodity][str(year)] = {}
+                statistics[commodity][str(year)] = {}
+                
+                for cluster in clusters:
+                    # Get prices for this commodity-year-cluster combination
+                    cluster_data = df[
+                        (df['Commodity'] == commodity) & 
+                        (df['Year'] == year) & 
+                        (df['Cluster'] == cluster)
+                    ]['Price'].tolist()
+                    
+                    # Store raw prices
+                    data[commodity][str(year)][str(cluster)] = cluster_data
+                    
+                    # Calculate statistics if we have data
+                    if cluster_data:
+                        prices = np.array(cluster_data)
+                        stats = self._calculate_boxplot_statistics(prices)
+                        statistics[commodity][str(year)][str(cluster)] = stats
+                    else:
+                        # Empty statistics for missing data
+                        statistics[commodity][str(year)][str(cluster)] = {
+                            "min": None, "q1": None, "median": None, "q3": None,
+                            "max": None, "mean": None, "std": None, "outliers": []
+                        }
+        
+        # Get cluster colors from existing palette
+        cluster_colors = {}
+        for i, cluster in enumerate(clusters):
+            # Use the same color palette as clusters
+            default_palette = [
+                "#EF4444", "#22C55E", "#EAB308", "#3B82F6", "#8B5CF6",
+                "#F97316", "#14B8A6", "#EC4899", "#6366F1", "#6B7280"
+            ]
+            cluster_colors[str(cluster)] = default_palette[i % len(default_palette)]
+        
+        boxplot_data = {
+            "commodities": commodities,
+            "clusters": [int(c) for c in clusters],
+            "years": years,
+            "data": data,
+            "statistics": statistics,
+            "clusterColors": cluster_colors
+        }
+        
+        logger.info(f"Calculated boxplot data for {len(commodities)} commodities, {len(clusters)} clusters, {len(years)} years")
+        return boxplot_data
+    
+    def _calculate_boxplot_statistics(self, prices: np.ndarray) -> Dict[str, Any]:
+        """Calculate boxplot statistics for a price array."""
+        if len(prices) == 0:
+            return {
+                "min": None, "q1": None, "median": None, "q3": None,
+                "max": None, "mean": None, "std": None, "outliers": []
+            }
+        
+        # Basic statistics
+        min_val = float(np.min(prices))
+        max_val = float(np.max(prices))
+        mean_val = float(np.mean(prices))
+        std_val = float(np.std(prices))
+        
+        # Quartiles
+        q1 = float(np.percentile(prices, 25))
+        median = float(np.median(prices))
+        q3 = float(np.percentile(prices, 75))
+        
+        # Outliers using IQR method
+        iqr = q3 - q1
+        lower_bound = q1 - 1.5 * iqr
+        upper_bound = q3 + 1.5 * iqr
+        outliers = [float(x) for x in prices if x < lower_bound or x > upper_bound]
+        
+        return {
+            "min": min_val,
+            "q1": q1,
+            "median": median,
+            "q3": q3,
+            "max": max_val,
+            "mean": mean_val,
+            "std": std_val,
+            "outliers": outliers
+        }
+
+    def format_correlation_matrix(
+        self,
+        merged_df: pd.DataFrame,
+        config: Any
+    ) -> Dict[str, Any]:
+        """
+        Calculate correlation matrix for commodity prices.
+        
+        Args:
+            merged_df: Preprocessed DataFrame with cluster labels
+            config: Configuration object with correlation_mode setting
+            
+        Returns:
+            Dictionary with correlation matrix data
+        """
+        if merged_df is None or merged_df.empty:
+            return {}
+        
+        # Check if we have the required columns
+        required_cols = ['Commodity', 'Price', 'Date']
+        if not all(col in merged_df.columns for col in required_cols):
+            logger.warning("Missing required columns for correlation calculation")
+            return {}
+        
+        # Get unique commodities
+        commodities = sorted(merged_df['Commodity'].unique())
+        if len(commodities) < 2:
+            logger.warning("Need at least 2 commodities for correlation calculation")
+            return {}
+        
+        # Route to appropriate calculation method
+        correlation_mode = getattr(config, 'correlation_mode', 'global')
+        
+        if correlation_mode == "global":
+            return self._calculate_global_correlation(merged_df, commodities)
+        elif correlation_mode == "per_cluster":
+            return self._calculate_per_cluster_correlation(merged_df, commodities)
+        else:
+            logger.warning(f"Unknown correlation mode: {correlation_mode}")
+            return {}
+    
+    def _calculate_global_correlation(
+        self,
+        merged_df: pd.DataFrame,
+        commodities: List[str]
+    ) -> Dict[str, Any]:
+        """Calculate global correlation across all data."""
+        # Create pivot table: each row is a unique (city, date) combination
+        # Each column is a commodity price
+        pivot_df = merged_df.pivot_table(
+            index=['City', 'Date'],
+            columns='Commodity',
+            values='Price',
+            aggfunc='mean'  # Handle any duplicates
+        ).reset_index()
+        
+        # Get only commodity columns for correlation
+        commodity_cols = [col for col in pivot_df.columns if col in commodities]
+        correlation_df = pivot_df[commodity_cols]
+        
+        # Calculate correlation matrix
+        corr_matrix = correlation_df.corr()
+        
+        # Calculate p-values
+        pvalue_matrix = self._calculate_pvalue_matrix(correlation_df)
+        
+        # Convert to lists for JSON serialization
+        matrix = corr_matrix.round(2).values.tolist()
+        pvalues = pvalue_matrix.round(3).values.tolist()
+        
+        return {
+            "mode": "global",
+            "commodities": commodities,
+            "matrix": matrix,
+            "pValues": pvalues,
+            "method": "pearson",
+            "description": "Correlation matrix showing price relationships between commodities"
+        }
+    
+    def _calculate_per_cluster_correlation(
+        self,
+        merged_df: pd.DataFrame,
+        commodities: List[str]
+    ) -> Dict[str, Any]:
+        """Calculate correlation per cluster."""
+        if 'Cluster' not in merged_df.columns:
+            logger.warning("Cluster column not found for per-cluster correlation")
+            return {}
+        
+        clusters = sorted(merged_df['Cluster'].unique())
+        cluster_matrices = {}
+        
+        for cluster in clusters:
+            cluster_data = merged_df[merged_df['Cluster'] == cluster]
+            
+            # Create pivot table for this cluster
+            pivot_df = cluster_data.pivot_table(
+                index=['City', 'Date'],
+                columns='Commodity',
+                values='Price',
+                aggfunc='mean'
+            ).reset_index()
+            
+            # Get only commodity columns
+            commodity_cols = [col for col in pivot_df.columns if col in commodities]
+            correlation_df = pivot_df[commodity_cols]
+            
+            # Check if we have enough data
+            if len(correlation_df) < 3:
+                logger.warning(f"Insufficient data for cluster {cluster} correlation")
+                cluster_matrices[str(cluster)] = {
+                    "matrix": [[None] * len(commodities) for _ in range(len(commodities))],
+                    "pValues": [[None] * len(commodities) for _ in range(len(commodities))]
+                }
+                continue
+            
+            # Calculate correlation and p-values
+            corr_matrix = correlation_df.corr()
+            pvalue_matrix = self._calculate_pvalue_matrix(correlation_df)
+            
+            cluster_matrices[str(cluster)] = {
+                "matrix": corr_matrix.round(2).values.tolist(),
+                "pValues": pvalue_matrix.round(3).values.tolist()
+            }
+        
+        return {
+            "mode": "per_cluster",
+            "commodities": commodities,
+            "clusterMatrices": cluster_matrices,
+            "method": "pearson",
+            "description": "Correlation matrix showing price relationships per cluster"
+        }
+    
+    def _calculate_pvalue_matrix(self, correlation_df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate p-values for correlation matrix."""
+        commodities = correlation_df.columns
+        n_commodities = len(commodities)
+        
+        # Initialize p-value matrix
+        pvalue_matrix = pd.DataFrame(
+            np.ones((n_commodities, n_commodities)),
+            index=commodities,
+            columns=commodities
+        )
+        
+        # Calculate p-values for each pair
+        for i, commodity1 in enumerate(commodities):
+            for j, commodity2 in enumerate(commodities):
+                if i != j:  # Skip diagonal (self-correlation)
+                    # Get valid data points (non-null for both commodities)
+                    valid_data = correlation_df[[commodity1, commodity2]].dropna()
+                    
+                    if len(valid_data) >= 3:  # Minimum for correlation
+                        try:
+                            _, p_value = pearsonr(valid_data[commodity1], valid_data[commodity2])
+                            pvalue_matrix.loc[commodity1, commodity2] = p_value
+                        except Exception as e:
+                            logger.warning(f"Error calculating p-value for {commodity1}-{commodity2}: {e}")
+                            pvalue_matrix.loc[commodity1, commodity2] = None
+                    else:
+                        pvalue_matrix.loc[commodity1, commodity2] = None
+        
+        return pvalue_matrix
+
+    def format_pca_data(
+        self,
+        scaled_features: pd.DataFrame,
+        labels: np.ndarray,
+        cities: List[str]
+    ) -> Dict[str, Any]:
+        """
+        Calculate PCA data for scatter plot visualization.
+        
+        Args:
+            scaled_features: Scaled feature matrix used for clustering
+            labels: Cluster assignment labels
+            cities: List of city names
+            
+        Returns:
+            Dictionary with PCA data for scatter plot
+        """
+        if scaled_features is None or scaled_features.empty:
+            return {}
+        
+        if "City" in scaled_features.columns:
+            scaled_features = scaled_features.drop("City", axis=1)
+        
+        if len(scaled_features) != len(labels) or len(scaled_features) != len(cities):
+            logger.warning("Mismatch in data dimensions for PCA calculation")
+            return {}
+        
+        try:
+            # Apply PCA to scaled features
+            pca = PCA(n_components=2)
+            pca_result = pca.fit_transform(scaled_features)
+            
+            # Extract explained variance ratios and variances
+            components = {
+                "pc1": {
+                    "explained_variance_ratio": float(pca.explained_variance_ratio_[0]),
+                    "explained_variance": float(pca.explained_variance_[0])
+                },
+                "pc2": {
+                    "explained_variance_ratio": float(pca.explained_variance_ratio_[1]),
+                    "explained_variance": float(pca.explained_variance_[1])
+                }
+            }
+            
+            # Create transformed data points
+            transformed_data = []
+            for i, (x, y) in enumerate(pca_result):
+                transformed_data.append({
+                    "x": float(x),
+                    "y": float(y),
+                    "clusterId": int(labels[i]),
+                    "cityName": cities[i],
+                    "originalIndex": i
+                })
+            
+            # Calculate feature contributions to each principal component
+            feature_names = scaled_features.columns.tolist()
+            feature_contributions = {
+                "pc1": {name: float(pca.components_[0][i]) for i, name in enumerate(feature_names)},
+                "pc2": {name: float(pca.components_[1][i]) for i, name in enumerate(feature_names)}
+            }
+            
+            pca_data = {
+                "components": components,
+                "transformed_data": transformed_data,
+                "feature_contributions": feature_contributions,
+                "method": "PCA",
+                "description": "Principal Component Analysis of commodity price data"
+            }
+            
+            logger.info(f"Calculated PCA data for {len(transformed_data)} cities with {len(feature_names)} features")
+            return pca_data
+            
+        except Exception as e:
+            logger.error(f"Error calculating PCA data: {e}")
+            return {}
+
     def format_frontend_response(
         self,
         analysis_id: str,
@@ -176,7 +552,9 @@ class APIResponseFormatter:
         merged_df: Optional[pd.DataFrame] = None,
         commodities: Optional[List[str]] = None,
         years: Optional[List[int]] = None,
-        clusters_palette: Optional[List[Dict[str, Any]]] = None
+        clusters_palette: Optional[List[Dict[str, Any]]] = None,
+        config: Optional[Any] = None,
+        scaled_features: Optional[pd.DataFrame] = None
     ) -> Dict[str, Any]:
         """
         Assemble response.json-like structure for the frontend map visualization.
@@ -240,6 +618,32 @@ class APIResponseFormatter:
                 cities=cities
             )
 
+        # Boxplot data (optional if merged_df provided)
+        boxplot_data: Dict[str, Any] = {}
+        if merged_df is not None and not merged_df.empty:
+            boxplot_data = self.format_boxplot_data(
+                merged_df=merged_df,
+                labels=labels,
+                cities=cities
+            )
+
+        # Correlation matrix (optional if merged_df provided)
+        correlation_matrix: Dict[str, Any] = {}
+        if merged_df is not None and not merged_df.empty:
+            correlation_matrix = self.format_correlation_matrix(
+                merged_df=merged_df,
+                config=config
+            )
+
+        # PCA data (optional if scaled features provided)
+        pca_data: Dict[str, Any] = {}
+        if scaled_features is not None and not scaled_features.empty:
+            pca_data = self.format_pca_data(
+                scaled_features=scaled_features,
+                labels=labels,
+                cities=cities
+            )
+
         response = {
             "analysis_id": analysis_id,
             "years": years_list,
@@ -251,6 +655,18 @@ class APIResponseFormatter:
         # Only add radarFeatures if we have data
         if radar_features:
             response["radarFeatures"] = radar_features
+        
+        # Only add boxPlotData if we have data
+        if boxplot_data:
+            response["boxPlotData"] = boxplot_data
+        
+        # Only add correlationMatrix if we have data
+        if correlation_matrix:
+            response["correlationMatrix"] = correlation_matrix
+        
+        # Only add pcaData if we have data
+        if pca_data:
+            response["pcaData"] = pca_data
 
         return response
     def format_cluster_assignments(

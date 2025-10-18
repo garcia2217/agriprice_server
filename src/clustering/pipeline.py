@@ -196,8 +196,6 @@ class ClusteringAnalysisPipeline:
         # Extract feature matrix and city names
         X, cities = self.input_handler.prepare_feature_matrix(scaled_df)
         
-        
-        
         # Validate inputs
         validation = self.input_handler.validate_clustering_inputs(X, cities, k)
         if not validation['valid']:
@@ -236,7 +234,9 @@ class ClusteringAnalysisPipeline:
                     labels=result.labels,
                     cities=cities,
                     preprocessed_df=preprocessed_df,
-                    merged_df=merged_df
+                    merged_df=merged_df,
+                    config=self.config,
+                    scaled_features=scaled_df
                 )
             elif return_format == "detailed":
                 return self.api_formatter.format_detailed_response(
