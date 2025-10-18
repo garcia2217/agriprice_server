@@ -229,7 +229,18 @@ class ClusteringAnalysisPipeline:
                 })
                 merged_df = preprocessed_df.merge(cluster_map, on="City", how="left")
                 
-                return self.api_formatter.format_frontend_response(
+                # Generate PDF report
+                pdf_path = self._generate_pdf_report(
+                    scaled_df=scaled_df,
+                    preprocessed_df=preprocessed_df,
+                    labels=result.labels,
+                    model=result.model,
+                    silhouette_avg=result.additional_info.get("silhouette"),
+                    algorithm_name=algorithm,
+                    analysis_id=analysis_id
+                )
+                
+                response = self.api_formatter.format_frontend_response(
                     analysis_id=analysis_id,
                     labels=result.labels,
                     cities=cities,
@@ -238,6 +249,12 @@ class ClusteringAnalysisPipeline:
                     config=self.config,
                     scaled_features=scaled_df
                 )
+                
+                # Add PDF info to response
+                response["pdf_available"] = True
+                response["pdf_path"] = f"temp_pdfs/analysis_{analysis_id}.pdf"
+                
+                return response
             elif return_format == "detailed":
                 return self.api_formatter.format_detailed_response(
                     cities, result.labels, result.additional_info or {}, algorithm, k, result.execution_time
@@ -324,7 +341,53 @@ class ClusteringAnalysisPipeline:
         logger.info(f"Clustering completed: {algorithm} k={k}, silhouette={metrics.get('silhouette', 'N/A'):.3f}")
         
         return result
-    
+
+    def _generate_pdf_report(
+        self,
+        scaled_df: pd.DataFrame,
+        preprocessed_df: pd.DataFrame,
+        labels: np.ndarray,
+        model: Any,
+        silhouette_avg: float,
+        algorithm_name: str,
+        analysis_id: str
+    ) -> Path:
+        """
+        Generate PDF report using visualization service.
+        """
+        try:
+            # Create temp_pdfs directory
+            temp_pdfs_dir = Path("temp_pdfs")
+            temp_pdfs_dir.mkdir(exist_ok=True)
+            
+            # PDF output path
+            pdf_path = temp_pdfs_dir / f"analysis_{analysis_id}.pdf"
+            
+            # Import visualization service
+            from src.visualization.pipeline import ClusterVisualizationService
+            
+            # Initialize visualization service
+            viz_service = ClusterVisualizationService(
+                scaled_df=scaled_df,
+                preprocessed_df=preprocessed_df,
+                labels=labels,
+                model=model,
+                silhouette_avg=silhouette_avg,
+                algorithm_name=algorithm_name,
+                output_path=temp_pdfs_dir  # Temporary output path
+            )
+            
+            # Generate PDF report
+            viz_service.generate_pdf_report(pdf_path)
+            
+            logger.info(f"PDF report generated: {pdf_path}")
+            return pdf_path
+            
+        except Exception as e:
+            logger.error(f"Error generating PDF report: {e}")
+            # Return None to indicate PDF generation failed
+            return None
+
     def _generate_experiment_outputs(
         self,
         result: ClusteringResult,
