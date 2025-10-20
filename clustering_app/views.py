@@ -16,11 +16,17 @@ from django.views.decorators.csrf import csrf_exempt
 from src.preprocessing import ConsolidationConfig, DataConsolidator
 from src.features import FeatureEngineeringConfig, FeatureEngineeringPipeline
 from src.clustering import ClusteringPipelineConfig, ClusteringAnalysisPipeline
+from src.utils.validators import (
+    validate_file_format, validate_geographic_scope, validate_data_structure,
+    validate_data_quality, validate_commodities, validate_temporal_range,
+    extract_available_options, calculate_data_summary
+)
 import json
 import io
 import psutil
 import time
 import shutil
+import pandas as pd
 
 def get_system_metrics():
     return {
@@ -57,6 +63,34 @@ def analyze_view(request):
         else:
             return JsonResponse({"error": "Unsupported content type"}, status=400)
         
+        # Check if this is a validation_id mode
+        validation_id = user_config.get("validation_id")
+        if validation_id:
+            # Load data from Parquet file
+            parquet_path = Path("temp_data") / f"validation_{validation_id}.parquet"
+            
+            if not parquet_path.exists():
+                return JsonResponse({"error": "Validation data not found"}, status=404)
+            
+            consolidated_df = pd.read_parquet(parquet_path)
+            
+            # Filter based on user selections
+            selected_commodities = user_config.get("selected_commodities")
+            selected_years = user_config.get("selected_years")
+            selected_cities = user_config.get("selected_cities")
+            
+            # Apply filters to consolidated_df
+            if selected_commodities:
+                consolidated_df = consolidated_df[consolidated_df["Commodity"].isin(selected_commodities)]
+            if selected_years:
+                consolidated_df = consolidated_df[consolidated_df["Year"].astype(int).isin(selected_years)]
+            if selected_cities:
+                consolidated_df = consolidated_df[consolidated_df["City"].isin(selected_cities)]
+            
+            # Set up feature engineering config for validated data
+            feature_engineering_config = FeatureEngineeringConfig()
+            file = None  # No file upload in validation mode
+        
         print("=== FILE DITERIMA ===")
         print(file)
         print("Nama file:", file.name if file else None)
@@ -78,8 +112,11 @@ def analyze_view(request):
         algorithm = user_config.get("algorithms")[0]
         num_of_cluster = user_config.get("numClusters")
         
-        consolidated_df = None
-        if file:
+        # Handle different input modes
+        if validation_id:
+            # Data already loaded from Parquet file above
+            pass
+        elif file:
             config = ConsolidationConfig(
                 input_type="zip",
             )
@@ -99,6 +136,8 @@ def analyze_view(request):
         
             feature_engineering_config = FeatureEngineeringConfig()
         else:
+            consolidated_df = None
+            
             feature_engineering_config = FeatureEngineeringConfig(
                 filter_years=years,
                 filter_commodities=commodities,
@@ -202,3 +241,145 @@ def cleanup_old_pdfs(hours: int = 24):
             
     except Exception as e:
         print(f"❌ Error during cleanup: {e}")
+
+
+def cleanup_old_validations(hours: int = 1):
+    """
+    Clean up validation Parquet files older than specified hours
+    """
+    try:
+        temp_data_dir = Path("temp_data")
+        if not temp_data_dir.exists():
+            return
+        
+        cutoff_time = time.time() - (hours * 60 * 60)
+        cleaned_count = 0
+        
+        for parquet_file in temp_data_dir.glob("validation_*.parquet"):
+            if parquet_file.stat().st_mtime < cutoff_time:
+                parquet_file.unlink()
+                cleaned_count += 1
+        
+        if cleaned_count > 0:
+            print(f"🧹 Cleaned up {cleaned_count} old validation files")
+            
+    except Exception as e:
+        print(f"❌ Error during validation cleanup: {e}")
+
+
+@csrf_exempt
+def validate_data_view(request):
+    """
+    Validate uploaded ZIP file containing Excel data.
+    POST /api/clustering/validate-data/
+    """
+    if request.method == "POST":
+        # Clean up old validation files before processing
+        cleanup_old_validations(hours=1)
+        
+        try:
+            # Extract ZIP file from request
+            file = request.FILES.get("file")
+            
+            # Validate file format
+            is_valid_format, format_errors = validate_file_format(file)
+            if not is_valid_format:
+                return JsonResponse({
+                    "valid": False,
+                    "errors": format_errors
+                }, status=400)
+            
+            # Generate unique validation ID
+            validation_id = f"val_{int(time.time())}"
+            
+            # Process ZIP file using consolidation pipeline
+            config = ConsolidationConfig(input_type="zip")
+            consolidator = DataConsolidator(config)
+            
+            # Reset file position and read bytes
+            file.seek(0)
+            zip_bytes = file.read()
+            zip_stream = io.BytesIO(zip_bytes)
+            zip_stream.seek(0)  # Ensure stream is at beginning
+            
+            results = consolidator.process_zip_stream(zip_stream=zip_stream)
+            
+            if not results.get("success", False):
+                return JsonResponse({
+                    "valid": False,
+                    "errors": [f"Data consolidation failed: {results.get('error', 'Unknown error')}"]
+                }, status=400)
+            
+            consolidated_df = results.get("consolidated_df")
+            if consolidated_df is None:
+                return JsonResponse({
+                    "valid": False,
+                    "errors": ["Failed to consolidate data from ZIP file"]
+                }, status=400)
+            
+            # Run comprehensive validation checks
+            all_errors = []
+            all_warnings = []
+            
+            # 1. Geographic scope validation
+            valid_cities = config.valid_cities
+            is_valid_geo, geo_errors = validate_geographic_scope(consolidated_df, valid_cities)
+            if not is_valid_geo:
+                all_errors.extend(geo_errors)
+            
+            # 2. Data structure validation
+            is_valid_structure, structure_errors = validate_data_structure(consolidated_df)
+            if not is_valid_structure:
+                all_errors.extend(structure_errors)
+            
+            # 3. Commodity validation
+            supported_commodities = config.commodities
+            is_valid_commodities, commodity_errors = validate_commodities(consolidated_df, supported_commodities)
+            if not is_valid_commodities:
+                all_errors.extend(commodity_errors)
+            
+            # 4. Temporal validation
+            is_valid_temporal, temporal_errors = validate_temporal_range(consolidated_df)
+            if not is_valid_temporal:
+                all_errors.extend(temporal_errors)
+            
+            # 5. Data quality validation
+            is_valid_quality, quality_warnings, quality_metrics = validate_data_quality(consolidated_df)
+            all_warnings.extend(quality_warnings)
+            
+            # If any critical validation failed, return errors
+            if all_errors:
+                return JsonResponse({
+                    "valid": False,
+                    "errors": all_errors
+                }, status=400)
+            
+            # Save validated data as Parquet
+            temp_data_dir = Path("temp_data")
+            temp_data_dir.mkdir(exist_ok=True)
+            parquet_path = temp_data_dir / f"validation_{validation_id}.parquet"
+            consolidated_df.to_parquet(parquet_path)
+            
+            # Extract available options
+            available_data = extract_available_options(consolidated_df)
+            
+            # Calculate data summary
+            data_summary = calculate_data_summary(consolidated_df)
+            
+            # Return success response
+            return JsonResponse({
+                "validation_id": validation_id,
+                "valid": True,
+                "errors": [],
+                "warnings": all_warnings,
+                "available_data": available_data,
+                "data_quality": quality_metrics
+            })
+            
+        except Exception as e:
+            return JsonResponse({
+                "valid": False,
+                "errors": [f"Validation failed: {str(e)}"]
+            }, status=500)
+    
+    return JsonResponse({"error": "Use POST method"}, status=400)

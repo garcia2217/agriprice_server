@@ -5,6 +5,24 @@ Configuration management for data consolidation pipeline.
 from typing import List, Literal, Union
 from pathlib import Path
 from pydantic import BaseModel, Field, field_validator
+import json
+
+
+def load_valid_cities() -> List[str]:
+    """
+    Load valid cities from city_coordinates.json.
+    
+    Returns:
+        List of valid city names
+    """
+    try:
+        coords_path = Path("data/city_coordinates.json")
+        with open(coords_path, 'r', encoding='utf-8') as f:
+            coords_data = json.load(f)
+        return list(coords_data.keys())
+    except Exception as e:
+        print(f"Warning: Could not load city coordinates: {e}")
+        return []
 
 
 class ConsolidationConfig(BaseModel):
@@ -78,6 +96,12 @@ class ConsolidationConfig(BaseModel):
     commodity_column_name: str = Field(
         default="Komoditas (Rp)",
         description="Original name of commodity column in Excel files"
+    )
+    
+    # Validation parameters
+    valid_cities: List[str] = Field(
+        default_factory=load_valid_cities,
+        description="List of valid cities (from city_coordinates.json)"
     )
     
     @field_validator('log_level')
