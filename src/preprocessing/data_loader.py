@@ -306,8 +306,16 @@ class DataLoader:
             ValueError: If file cannot be processed
         """
         try:
-            # Load Excel file
-            df = pd.read_excel(file_info['file_path'])
+            # Optimized: Read only commodity column + date columns
+            df = pd.read_excel(
+                file_info['file_path'],
+                usecols=lambda x: x == self.config.commodity_column_name or '/' in str(x),
+                dtype={self.config.commodity_column_name: 'string'}
+            )
+            
+            # Early filtering - remove empty rows
+            df = df.dropna(how='all')
+            
             self.logger.debug(f"Loaded {file_info['file_path']}: {df.shape}")
             
             # Validate required columns exist
@@ -369,19 +377,15 @@ class DataLoader:
         Returns:
             DataFrame with additional Year, Month columns and parsed Date
         """
-        df_copy = df.copy()
+        # Parse dates and extract year/month in one vectorized operation
+        date_parsed = pd.to_datetime(df['Date'], format=self.config.date_format, errors='coerce')
         
-        # Parse dates and extract year/month
-        date_parsed = pd.to_datetime(df_copy['Date'], format=self.config.date_format, errors='coerce')
-        
-        df_copy['Year'] = date_parsed.dt.year.astype(str)
-        df_copy['Month'] = date_parsed.dt.month
-        df_copy['Date'] = date_parsed
+        df['Year'] = date_parsed.dt.year.astype(str)
+        df['Month'] = date_parsed.dt.month
+        df['Date'] = date_parsed
         
         # Remove rows with invalid dates
-        df_copy = df_copy.dropna(subset=['Date'])
-        
-        return df_copy
+        return df.dropna(subset=['Date'])
     
     def load_and_transform_file(self, file_info: Dict[str, Any]) -> pd.DataFrame:
         """

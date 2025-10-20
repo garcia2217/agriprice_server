@@ -13,6 +13,7 @@ import pandas as pd
 from .config import ConsolidationConfig
 from .data_loader import DataLoader
 from .cleaner import DataCleaner
+from .parallel_processor import ParallelFileProcessor
 
 # Try to import validators, but handle the case where it's not available
 try:
@@ -118,7 +119,7 @@ class DataConsolidator:
     
     def consolidate_data(self, input_path: Union[str, Path], remove_outliers: bool = False) -> pd.DataFrame:
         """
-        Main function to consolidate all food price data.
+        Main function to consolidate all food price data with parallel processing.
         
         Args:
             input_path: Path to raw data directory or ZIP file
@@ -130,7 +131,7 @@ class DataConsolidator:
         Raises:
             ValueError: If no files are found or processed successfully
         """
-        self.logger.info("Starting data consolidation process")
+        self.logger.info("Starting optimized data consolidation with parallel processing")
         
         # Get the actual data path (extract ZIP if necessary)
         raw_data_path = self.data_loader.get_data_path(input_path)
@@ -144,29 +145,18 @@ class DataConsolidator:
         if not discovered_files:
             raise ValueError("No files found matching the configuration criteria")
         
-        # Process each file
-        all_dataframes = []
-        failed_files = []
+        self.logger.info(f"Processing {len(discovered_files)} files in parallel...")
         
-        for i, file_info in enumerate(discovered_files, 1):
-            self.logger.info(f"Processing file {i}/{len(discovered_files)}: {file_info['city']} - {file_info['year']}")
-            
-            try:
-                # Load and transform file
-                df = self.data_loader.load_and_transform_file(file_info)
-                
-                # Clean the data
-                df_clean = self.data_cleaner.clean_dataframe(df, remove_outliers=remove_outliers)
-                
-                all_dataframes.append(df_clean)
-                
-            except Exception as e:
-                self.logger.error(f"Failed to process {file_info['file_path']}: {str(e)}")
-                failed_files.append({
-                    'file_path': str(file_info['file_path']),
-                    'error': str(e)
-                })
-                continue
+        # Initialize parallel processor
+        max_workers = min(8, len(discovered_files))  # Cap at 8 workers or number of files
+        parallel_processor = ParallelFileProcessor(max_workers=max_workers)
+        
+        # Process files in parallel
+        all_dataframes, failed_files = parallel_processor.process_files_parallel(
+            discovered_files, 
+            self.data_loader, 
+            self.data_cleaner
+        )
         
         if not all_dataframes:
             raise ValueError("No files were successfully processed")
@@ -177,9 +167,14 @@ class DataConsolidator:
             for failed in failed_files:
                 self.logger.warning(f"  - {failed['file_path']}: {failed['error']}")
         
-        # Concatenate all dataframes
-        self.logger.info("Concatenating all processed dataframes")
+        # Concatenate all dataframes efficiently
+        self.logger.info(f"Concatenating {len(all_dataframes)} processed dataframes")
         consolidated_df = pd.concat(all_dataframes, ignore_index=True)
+        
+        # Apply outlier removal if requested (after consolidation for efficiency)
+        if remove_outliers:
+            self.logger.info("Removing outliers from consolidated data")
+            consolidated_df = self.data_cleaner.remove_outliers(consolidated_df)
         
         # Final validation
         validation_results = validate_processed_data(consolidated_df)
@@ -189,7 +184,6 @@ class DataConsolidator:
                         f"{validation_results['total_cities']} cities, "
                         f"{validation_results['total_commodities']} commodities")
         
-        # Log any quality issues
         if validation_results['quality_issues']:
             self.logger.warning("Quality issues detected:")
             for issue in validation_results['quality_issues']:

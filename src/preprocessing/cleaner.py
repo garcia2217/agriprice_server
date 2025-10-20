@@ -37,21 +37,17 @@ class DataCleaner:
         Returns:
             DataFrame with missing values handled
         """
+        # Replace missing indicators in-place for efficiency
         df_clean = df.copy()
         
-        # Replace missing value indicators with NaN
         for indicator in self.config.missing_value_indicators:
-            df_clean["Price"] = df_clean["Price"].replace(indicator, np.nan)
+            df_clean.loc[df_clean["Price"] == indicator, "Price"] = np.nan
         
-        # Sort for proper forward/backward fill
+        # Sort once for all operations
         df_clean = df_clean.sort_values(["City", "Commodity", "Date"])
         
-        # Forward fill then backward fill within groups
-        df_clean["Price"] = (
-            df_clean.groupby(["City", "Commodity"])["Price"]
-            .ffill()
-            .bfill()
-        )
+        # Optimized forward-fill and back-fill
+        df_clean["Price"] = df_clean.groupby(["City", "Commodity"], observed=True)["Price"].ffill().bfill()
         
         return df_clean
     
@@ -67,21 +63,19 @@ class DataCleaner:
         """
         df_converted = df.copy()
         
-        # Convert price column
-        # Remove commas and convert to numeric
-        df_converted["Price"] = pd.to_numeric(
-            df_converted["Price"].astype(str).str.replace(",", "", regex=False),
-            errors="coerce"
+        # Optimized price conversion using method chaining
+        df_converted["Price"] = (
+            df_converted["Price"]
+            .astype(str)
+            .str.replace(",", "", regex=False)
+            .pipe(pd.to_numeric, errors="coerce")
         )
         
-        # Convert date column
-        df_converted["Date"] = pd.to_datetime(
-            df_converted["Date"],
-            format=self.config.date_format,
-            errors="coerce"
-        )
+        # Date already parsed in data_loader, just ensure datetime type
+        if not pd.api.types.is_datetime64_any_dtype(df_converted["Date"]):
+            df_converted["Date"] = pd.to_datetime(df_converted["Date"], errors="coerce")
         
-        # Convert categorical columns for memory efficiency
+        # Batch categorical conversion
         categorical_columns = ["City", "Commodity", "Year", "Province", "Source_File"]
         for col in categorical_columns:
             if col in df_converted.columns:
