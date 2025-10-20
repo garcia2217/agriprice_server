@@ -70,7 +70,7 @@ class FeatureEngineeringConfig(BaseModel):
         description="Features to extract (avg=average, cv=coeff_of_variation, trend=slope)"
     )
     aggregation_freq: Literal["all", "Y", "M"] = Field(
-        default="Y",
+        default="all",
         description="Temporal aggregation: 'all'=entire period, 'Y'=yearly, 'M'=monthly"
     )
     

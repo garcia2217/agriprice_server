@@ -474,75 +474,123 @@ class APIResponseFormatter:
         cities: List[str]
     ) -> Dict[str, Any]:
         """
-        Calculate PCA data for scatter plot visualization.
-        
+        Calculates 2D coordinates and metadata for scatter plot visualization.
+
+        It uses Principal Component Analysis (PCA) for data with > 2 features, 
+        but directly uses the two original features if n_features == 2. It returns 
+        an empty dictionary if the input data has fewer than 2 features.
+
         Args:
-            scaled_features: Scaled feature matrix used for clustering
-            labels: Cluster assignment labels
-            cities: List of city names
-            
+            scaled_features: Scaled feature matrix used for clustering (pandas DataFrame).
+            labels: Cluster assignment labels (numpy array).
+            cities: List of city names (list of strings).
+
         Returns:
-            Dictionary with PCA data for scatter plot
+            Dictionary with 2D coordinates and metadata, or an empty dictionary if 
+            data is invalid or calculation fails.
         """
         if scaled_features is None or scaled_features.empty:
+            logger.warning("Scaled features DataFrame is empty for visualization calculation.")
             return {}
         
-        if "City" in scaled_features.columns:
-            scaled_features = scaled_features.drop("City", axis=1)
+        # 1. Prepare Features
+        # Use .copy() to prevent SettingWithCopyWarning if scaled_features is a view
+        features = scaled_features.drop("City", axis=1).copy() if "City" in scaled_features.columns else scaled_features.copy()
         
-        if len(scaled_features) != len(labels) or len(scaled_features) != len(cities):
-            logger.warning("Mismatch in data dimensions for PCA calculation")
+        # 2. Check Data Consistency
+        if len(features) != len(labels) or len(features) != len(cities):
+            logger.warning("Mismatch in data dimensions for visualization calculation (features, labels, or cities).")
             return {}
+
+        n_features = features.shape[1]
         
-        try:
-            # Apply PCA to scaled features
-            pca = PCA(n_components=2)
-            pca_result = pca.fit_transform(scaled_features)
+        # 3. Dimensionality Check and Strategy Selection
+        pca_data = {}
+        
+        if n_features < 2:
+            # Strategy A: Insufficient data for 2D plot (Graceful Exit)
+            logger.warning(
+                f"Skipping 2D visualization: Input data has only {n_features} feature(s), "
+                f"but requires at least 2 for a 2-dimensional plot."
+            )
+            return {}
             
-            # Extract explained variance ratios and variances
-            components = {
-                "pc1": {
-                    "explained_variance_ratio": float(pca.explained_variance_ratio_[0]),
-                    "explained_variance": float(pca.explained_variance_[0])
-                },
-                "pc2": {
-                    "explained_variance_ratio": float(pca.explained_variance_ratio_[1]),
-                    "explained_variance": float(pca.explained_variance_[1])
+        elif n_features == 2:
+            # Strategy B: Use original features directly (Optimized for 2D data)
+            logger.info("Using original 2 features for 2D scatter plot (PCA skipped).")
+            try:
+                # Data must be converted to numpy array for iteration
+                transformed_result = features.values 
+                feature_names = features.columns.tolist()
+                
+                x_feature = str(feature_names[0]).split("_")[0]
+                y_feature = str(feature_names[1]).split("_")[0]
+                
+                pca_data = {
+                    "components": { # Define components structure for consistency
+                        "pc1": {"explained_variance_ratio": 1.0, "explained_variance": 1.0}, # Placeholder, as no variance is calculated
+                        "pc2": {"explained_variance_ratio": 1.0, "explained_variance": 1.0},
+                    },
+                    "feature_contributions": { # Label axes with original feature names
+                        "pc1": {name: 1.0 if i == 0 else 0.0 for i, name in enumerate(feature_names)},
+                        "pc2": {name: 1.0 if i == 1 else 0.0 for i, name in enumerate(feature_names)},
+                    },
+                    "method": "Original Features",
+                    "description": f"Direct plot of features: {x_feature} vs. {y_feature}",
+                    "features": {
+                        "x_axis": x_feature,
+                        "y_axis": y_feature
+                    },
                 }
-            }
+            except Exception as e:
+                logger.error(f"Error preparing 2-feature data for plotting: {e}")
+                return {}
             
-            # Create transformed data points
-            transformed_data = []
-            for i, (x, y) in enumerate(pca_result):
-                transformed_data.append({
-                    "x": float(x),
-                    "y": float(y),
-                    "clusterId": int(labels[i]),
-                    "cityName": cities[i],
-                    "originalIndex": i
-                })
-            
-            # Calculate feature contributions to each principal component
-            feature_names = scaled_features.columns.tolist()
-            feature_contributions = {
-                "pc1": {name: float(pca.components_[0][i]) for i, name in enumerate(feature_names)},
-                "pc2": {name: float(pca.components_[1][i]) for i, name in enumerate(feature_names)}
-            }
-            
-            pca_data = {
-                "components": components,
-                "transformed_data": transformed_data,
-                "feature_contributions": feature_contributions,
-                "method": "PCA",
-                "description": "Principal Component Analysis of commodity price data"
-            }
-            
-            logger.info(f"Calculated PCA data for {len(transformed_data)} cities with {len(feature_names)} features")
-            return pca_data
-            
-        except Exception as e:
-            logger.error(f"Error calculating PCA data: {e}")
-            return {}
+        else: # n_features > 2
+            # Strategy C: Apply PCA (Intended for high-dimensional data)
+            try:
+                pca = PCA(n_components=2, random_state=42)
+                transformed_result = pca.fit_transform(features)
+                feature_names = features.columns.tolist()
+
+                pca_data = {
+                    "components": {
+                        "pc1": {
+                            "explained_variance_ratio": float(pca.explained_variance_ratio_[0]),
+                            "explained_variance": float(pca.explained_variance_[0])
+                        },
+                        "pc2": {
+                            "explained_variance_ratio": float(pca.explained_variance_ratio_[1]),
+                            "explained_variance": float(pca.explained_variance_[1])
+                        }
+                    },
+                    "feature_contributions": {
+                        "pc1": {name: float(pca.components_[0][i]) for i, name in enumerate(feature_names)},
+                        "pc2": {name: float(pca.components_[1][i]) for i, name in enumerate(feature_names)}
+                    },
+                    "method": "PCA",
+                    "description": "Principal Component Analysis (PCA) reduction to 2 dimensions."
+                }
+            except Exception as e:
+                logger.error(f"Error calculating PCA data: {e}")
+                return {}
+
+        # 4. Create transformed data points (common to both Strategy B and C)
+        transformed_data = [
+            {
+                "x": float(x),
+                "y": float(y),
+                "clusterId": int(labels[i]),
+                "cityName": cities[i],
+                "originalIndex": i
+            } 
+            for i, (x, y) in enumerate(transformed_result)
+        ]
+        
+        # 5. Finalize and Return
+        pca_data["transformed_data"] = transformed_data
+        logger.info(f"Generated 2D visualization data for {len(transformed_data)} cities using {pca_data['method']}.")
+        return pca_data
 
     def format_silhouette_data(
         self,

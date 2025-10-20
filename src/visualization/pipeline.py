@@ -198,14 +198,69 @@ class ClusterVisualizationService:
             plt.close()
         print("    ✓ Done.")
 
-    def _generate_scatter_plot(self, output_path: Path):
-        pca = PCA(n_components=2, random_state=42)
-        X_reduced = pca.fit_transform(self.X)
-        title = "PCA 2D Cluster Visualization"
+    def _generate_scatter_plot(self, output_path: Path) -> None:
+        """
+        Generates and saves a 2D scatter plot visualization of clustered data.
+
+        If the input data (self.X) has > 2 features, PCA reduces it to 2D. 
+        If it has exactly 2 features, the original features are plotted directly.
+        If it has < 2 features, the function exits gracefully.
+
+        Args:
+            output_path: The file path where the generated plot will be saved.
+        """
+        # Use self.X to determine the number of features
+        if isinstance(self.X, pd.DataFrame):
+            data_to_plot = self.X.values
+            feature_names = self.X.columns.tolist()
+        else:
+            data_to_plot = self.X
+            feature_names = [f"Feature {i+1}" for i in range(data_to_plot.shape[1])]
+
+        n_features = data_to_plot.shape[1]
+        
+        # 1. Check for the required number of features and set the strategy
+        plot_method = ""
+        xlabel = ""
+        ylabel = ""
+
+        if n_features < 2:
+            # Strategy A: Insufficient data for 2D plot (Graceful Exit)
+            print(
+                f" ⚠️ Skipping 2D visualization: Data has only {n_features} "
+                f"feature(s), which is insufficient for a 2-dimensional plot."
+            )
+            return
+            
+        elif n_features == 2:
+            # Strategy B: Use original features directly (Optimized)
+            X_reduced = data_to_plot
+            plot_method = "Original Features"
+            xlabel = feature_names[0]
+            ylabel = feature_names[1]
+            print(" ℹ️ Plotting original 2 features directly (PCA skipped).")
+
+        else: # n_features > 2
+            # Strategy C: Perform PCA (Intended use)
+            pca = PCA(n_components=2, random_state=42)
+            X_reduced = pca.fit_transform(data_to_plot)
+            
+            # Calculate explained variance for informative labels
+            variance_ratio_1 = pca.explained_variance_ratio_[0] * 100
+            variance_ratio_2 = pca.explained_variance_ratio_[1] * 100
+            
+            plot_method = "PCA"
+            xlabel = f"Principal Component 1 ({variance_ratio_1:.1f}% var.)"
+            ylabel = f"Principal Component 2 ({variance_ratio_2:.1f}% var.)"
+            print(" ℹ️ Performing PCA to reduce data to 2 dimensions.")
+
+        # 2. Generate the scatter plot (Common to both N=2 and N>2)
+        title = f"{plot_method} 2D Cluster Visualization"
 
         plt.figure(figsize=(10, 8))
         n_clusters = len(np.unique(self.labels))
         palette = sns.color_palette("tab10", n_colors=n_clusters)
+        
         sns.scatterplot(
             x=X_reduced[:, 0],
             y=X_reduced[:, 1],
@@ -213,15 +268,18 @@ class ClusterVisualizationService:
             palette=palette,
             s=80,
             alpha=0.9,
-            edgecolor='k'
+            edgecolor='k',
+            legend='full'
         )
+        
         plt.title(title, fontsize=16)
-        plt.xlabel("Dimension 1")
-        plt.ylabel("Dimension 2")
+        plt.xlabel(xlabel)
+        plt.ylabel(ylabel)
         plt.legend(title="Cluster")
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
         plt.close()
-        print("    ✓ Done.")
+        
+        print(f" ✓ Done: {plot_method} visualization saved to {output_path.name}")
 
     def _generate_box_plot(self, merged_df, output_path: Path):
         # This method remains largely the same as it already consumes processed data
