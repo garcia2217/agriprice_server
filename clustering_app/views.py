@@ -40,115 +40,54 @@ def get_system_metrics():
 def analyze_view(request):
     if request.method == "POST":
         # Clean up old PDFs before processing
-        cleanup_old_pdfs(hours=24)
+        cleanup_old_pdfs(hours=0)
         
-        before_metrics = get_system_metrics()
-        start_time = time.time()
-        
-        if request.content_type.startswith("multipart/form-data"):
-            # Mode upload file
-            file = request.FILES.get("file")
-            user_config = json.loads(request.POST.get("config", "{}"))
-        elif request.content_type == "application/json":
-            # Mode JSON only
-            data = json.loads(request.body)
-            file = None
-            user_config = data
-            # filter data
+        if request.content_type == "application/json":
+            user_config = json.loads(request.body)
+            validation_id = user_config.get("validation_id")
+            algorithm = user_config.get("algorithms")[0]
+            num_of_cluster = user_config.get("numClusters")
+            cities = user_config.get("locations").get("cities")
             commodities = user_config.get("commodities")
             start_year = int(user_config.get("yearRange").get("start"))
             end_year = int(user_config.get("yearRange").get("end"))
             years = list(range(start_year, end_year + 1))
-            cities = user_config.get("locations").get("cities")
+            
+            print("\n=== CONFIGURATION ===")
+            if user_config:
+                try:
+                    print(json.dumps(user_config, indent=4))
+                except Exception as e:
+                    print("Failed parsing configuration:", e)
+                    user_config = None
+            else:
+                user_config = None
+                print("No configuration is sent.")
+            
         else:
             return JsonResponse({"error": "Unsupported content type"}, status=400)
         
-        # Check if this is a validation_id mode
-        validation_id = user_config.get("validation_id")
+        feature_engineering_config = FeatureEngineeringConfig(
+            filter_years=years,
+            filter_commodities=commodities,
+            filter_cities=cities
+        )
+        
+        feature_engineering_pipeline = FeatureEngineeringPipeline(feature_engineering_config)
+        
+        df_consolidated = None
         if validation_id:
-            # Load data from Parquet file
             parquet_path = Path("temp_data") / f"validation_{validation_id}.parquet"
             
             if not parquet_path.exists():
                 return JsonResponse({"error": "Validation data not found"}, status=404)
             
-            consolidated_df = pd.read_parquet(parquet_path)
+            df_consolidated = pd.read_parquet(parquet_path)
             
-            # Filter based on user selections
-            selected_commodities = user_config.get("selected_commodities")
-            selected_years = user_config.get("selected_years")
-            selected_cities = user_config.get("selected_cities")
-            
-            # Apply filters to consolidated_df
-            if selected_commodities:
-                consolidated_df = consolidated_df[consolidated_df["Commodity"].isin(selected_commodities)]
-            if selected_years:
-                consolidated_df = consolidated_df[consolidated_df["Year"].astype(int).isin(selected_years)]
-            if selected_cities:
-                consolidated_df = consolidated_df[consolidated_df["City"].isin(selected_cities)]
-            
-            # Set up feature engineering config for validated data
-            feature_engineering_config = FeatureEngineeringConfig()
-            file = None  # No file upload in validation mode
-        
-        print("=== FILE DITERIMA ===")
-        print(file)
-        print("Nama file:", file.name if file else None)
-        print("Ukuran:", file.size if file else None)
+            feature_engineering_results = feature_engineering_pipeline.run_full_pipeline(df_consolidated)
+        else:
+            feature_engineering_results = feature_engineering_pipeline.run_full_pipeline()
 
-        print("\n=== CONFIG ===")
-        if user_config:
-            try:
-                print(json.dumps(user_config, indent=4))
-            except Exception as e:
-                print("Gagal parse config:", e)
-                user_config = None
-        else:
-            user_config = None
-            print("Tidak ada config dikirim")
-            
-            
-        # user config
-        algorithm = user_config.get("algorithms")[0]
-        num_of_cluster = user_config.get("numClusters")
-        
-        # Handle different input modes
-        if validation_id:
-            # Data already loaded from Parquet file above
-            pass
-        elif file:
-            config = ConsolidationConfig(
-                input_type="zip",
-            )
-            
-            zip_bytes = file.read()
-            zip_stream = io.BytesIO(zip_bytes)
-            
-            consolidator = DataConsolidator(config)
-            results = consolidator.process_zip_stream(
-                zip_stream=zip_stream
-            )
-            
-            consolidated_df = results.get("consolidated_df")
-            
-            if consolidated_df is None:
-                print("error consolidation process failed")
-        
-            feature_engineering_config = FeatureEngineeringConfig()
-        else:
-            consolidated_df = None
-            
-            feature_engineering_config = FeatureEngineeringConfig(
-                filter_years=years,
-                filter_commodities=commodities,
-                filter_cities=cities
-            )
-            
-        feature_engineering_pipeline = FeatureEngineeringPipeline(feature_engineering_config)
-        feature_engineering_results = feature_engineering_pipeline.run_full_pipeline(
-            input_data=consolidated_df
-        )
-        
         scaled_df = feature_engineering_results.get("scaled_features").get("robust")
         preprocessed_data = feature_engineering_results.get("consolidated")
         
@@ -157,8 +96,8 @@ def analyze_view(request):
             algorithm=algorithm,
             k=num_of_cluster
         )
+        
         pipeline = ClusteringAnalysisPipeline(clustering_config)
-
         response = pipeline.run_single_clustering(
             scaled_data=scaled_df,              
             preprocessed_data=preprocessed_data,  
@@ -167,21 +106,6 @@ def analyze_view(request):
             return_format="api"
         )
         
-        after_metrics = get_system_metrics()
-        end_time = time.time()
-        
-        # NEW: Calculate and log metrics
-        duration = end_time - start_time
-        cpu_impact = after_metrics['cpu_percent'] - before_metrics['cpu_percent']
-        memory_impact = after_metrics['memory_percent'] - before_metrics['memory_percent']
-        
-        print(f"=== CLUSTERING ANALYSIS METRICS ===")
-        print(f"Duration: {duration:.2f}s")
-        print(f"CPU Impact: {cpu_impact:.2f}%")
-        print(f"Memory Impact: {memory_impact:.2f}%")
-        print(f"Available Memory: {after_metrics['memory_available_gb']:.2f}GB")
-        print(f"=================================")
-
         return JsonResponse(response, safe=False)
 
     return JsonResponse({"error": "Gunakan metode POST"}, status=400)
@@ -219,6 +143,81 @@ def download_pdf(request, analysis_id):
     
     return JsonResponse({"error": "Use GET method"}, status=400)
 
+@csrf_exempt
+def validate_data_view(request):
+    """
+    Validate uploaded ZIP file containing Excel data.
+    POST /api/clustering/validate-data/
+    """
+    # Import services
+    from .services import (
+        DataValidationService, FileProcessingService, 
+        ValidationResponseBuilder, ValidationLogger
+    )
+    from .exceptions import ValidationError, FileFormatError
+    from .constants import MAX_VALIDATION_AGE_HOURS
+    
+    # Initialize services
+    logger = ValidationLogger()
+    validation_service = DataValidationService()
+    file_processor = FileProcessingService()
+    response_builder = ValidationResponseBuilder()
+    
+    if request.method != "POST":
+        return response_builder.build_method_not_allowed_response()
+    
+    try:
+        # Extract and validate file presence
+        file = request.FILES.get("file")
+        if not file:
+            raise FileFormatError("No file provided in request")
+        
+        logger.log_validation_start(file.name, file.size)
+        
+        # Clean up old validation files
+        files_cleaned = file_processor.cleanup_old_files(hours=MAX_VALIDATION_AGE_HOURS)
+        if files_cleaned > 0:
+            logger.log_cleanup_operation(files_cleaned, MAX_VALIDATION_AGE_HOURS)
+        
+        # Run validation pipeline
+        validation_result = validation_service.run_all_validations(file)
+        
+        if not validation_result.is_valid:
+            logger.log_validation_error("validation", validation_result.errors[0] if validation_result.errors else "Unknown validation error")
+            return response_builder.build_error_response(
+                errors=validation_result.errors,
+                status_code=400
+            )
+        
+        # Process and save validated data
+        validation_id = f"val_{int(time.time())}"
+        file_processor.process_zip_file(file, validation_id)
+        parquet_path = file_processor.save_validated_data(validation_result.data, validation_id)
+        
+        logger.log_file_processing("save", parquet_path, True)
+        
+        # Extract available options
+        available_data = extract_available_options(validation_result.data)
+        
+        logger.log_validation_success(validation_id, validation_result.metrics)
+        
+        return response_builder.build_success_response(
+            validation_id=validation_id,
+            available_data=available_data,
+            warnings=validation_result.warnings
+        )
+        
+    except ValidationError as e:
+        logger.log_validation_error(e.error_type, str(e), e.details)
+        return response_builder.build_validation_error_response(e)
+    
+    except Exception as e:
+        logger.log_validation_error("SYSTEM_ERROR", str(e), {})
+        return response_builder.build_system_error_response(
+            "An unexpected error occurred during validation",
+            str(e)
+        )
+        
 def cleanup_old_pdfs(hours: int = 24):
     """
     Clean up PDFs older than specified hours
@@ -267,119 +266,3 @@ def cleanup_old_validations(hours: int = 1):
         print(f"❌ Error during validation cleanup: {e}")
 
 
-@csrf_exempt
-def validate_data_view(request):
-    """
-    Validate uploaded ZIP file containing Excel data.
-    POST /api/clustering/validate-data/
-    """
-    if request.method == "POST":
-        # Clean up old validation files before processing
-        cleanup_old_validations(hours=1)
-        
-        try:
-            # Extract ZIP file from request
-            file = request.FILES.get("file")
-            
-            # Validate file format
-            is_valid_format, format_errors = validate_file_format(file)
-            if not is_valid_format:
-                return JsonResponse({
-                    "valid": False,
-                    "errors": format_errors
-                }, status=400)
-            
-            # Generate unique validation ID
-            validation_id = f"val_{int(time.time())}"
-            
-            # Process ZIP file using consolidation pipeline
-            config = ConsolidationConfig(input_type="zip")
-            consolidator = DataConsolidator(config)
-            
-            # Reset file position and read bytes
-            file.seek(0)
-            zip_bytes = file.read()
-            zip_stream = io.BytesIO(zip_bytes)
-            zip_stream.seek(0)  # Ensure stream is at beginning
-            
-            results = consolidator.process_zip_stream(zip_stream=zip_stream)
-            
-            if not results.get("success", False):
-                return JsonResponse({
-                    "valid": False,
-                    "errors": [f"Data consolidation failed: {results.get('error', 'Unknown error')}"]
-                }, status=400)
-            
-            consolidated_df = results.get("consolidated_df")
-            if consolidated_df is None:
-                return JsonResponse({
-                    "valid": False,
-                    "errors": ["Failed to consolidate data from ZIP file"]
-                }, status=400)
-            
-            # Run comprehensive validation checks
-            all_errors = []
-            all_warnings = []
-            
-            # 1. Geographic scope validation
-            valid_cities = config.valid_cities
-            is_valid_geo, geo_errors = validate_geographic_scope(consolidated_df, valid_cities)
-            if not is_valid_geo:
-                all_errors.extend(geo_errors)
-            
-            # 2. Data structure validation
-            is_valid_structure, structure_errors = validate_data_structure(consolidated_df)
-            if not is_valid_structure:
-                all_errors.extend(structure_errors)
-            
-            # 3. Commodity validation
-            supported_commodities = config.commodities
-            is_valid_commodities, commodity_errors = validate_commodities(consolidated_df, supported_commodities)
-            if not is_valid_commodities:
-                all_errors.extend(commodity_errors)
-            
-            # 4. Temporal validation
-            is_valid_temporal, temporal_errors = validate_temporal_range(consolidated_df)
-            if not is_valid_temporal:
-                all_errors.extend(temporal_errors)
-            
-            # 5. Data quality validation
-            is_valid_quality, quality_warnings, quality_metrics = validate_data_quality(consolidated_df)
-            all_warnings.extend(quality_warnings)
-            
-            # If any critical validation failed, return errors
-            if all_errors:
-                return JsonResponse({
-                    "valid": False,
-                    "errors": all_errors
-                }, status=400)
-            
-            # Save validated data as Parquet
-            temp_data_dir = Path("temp_data")
-            temp_data_dir.mkdir(exist_ok=True)
-            parquet_path = temp_data_dir / f"validation_{validation_id}.parquet"
-            consolidated_df.to_parquet(parquet_path)
-            
-            # Extract available options
-            available_data = extract_available_options(consolidated_df)
-            
-            # Calculate data summary
-            data_summary = calculate_data_summary(consolidated_df)
-            
-            # Return success response
-            return JsonResponse({
-                "validation_id": validation_id,
-                "valid": True,
-                "errors": [],
-                "warnings": all_warnings,
-                "available_data": available_data,
-                "data_quality": quality_metrics
-            })
-            
-        except Exception as e:
-            return JsonResponse({
-                "valid": False,
-                "errors": [f"Validation failed: {str(e)}"]
-            }, status=500)
-    
-    return JsonResponse({"error": "Use POST method"}, status=400)

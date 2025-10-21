@@ -374,7 +374,7 @@ class ClusteringAnalysisPipeline:
                 model=model,
                 silhouette_avg=silhouette_avg,
                 algorithm_name=algorithm_name,
-                output_path=temp_pdfs_dir  # Temporary output path
+                output_path=temp_pdfs_dir 
             )
             
             # Generate PDF report

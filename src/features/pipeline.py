@@ -281,7 +281,7 @@ class FeatureEngineeringPipeline:
 
     def run_full_pipeline(
         self, 
-        input_data: Optional[Union[Path, pd.DataFrame]] = None
+        df_consolidated: pd.DataFrame = None
     ) -> Dict[str, Any]:
         """
         Run the complete feature engineering pipeline.
@@ -296,31 +296,9 @@ class FeatureEngineeringPipeline:
         try:
             logger.info("Starting complete feature engineering pipeline")
             
-            df_consolidated = None
             input_source = "unknown"
             
-            # Priority 1: Use provided DataFrame directly
-            if isinstance(input_data, pd.DataFrame):
-                logger.info("Using provided DataFrame as input.")
-                df_consolidated = input_data.copy()
-                input_source = "provided_dataframe"
-                
-            # Priority 2: Use provided file path
-            elif isinstance(input_data, (Path, str)):
-                logger.info(f"Loading data from provided path: {input_data}")
-                df_consolidated = self.load_consolidated_data(Path(input_data))
-                input_source = f"provided_path: {input_data}"
-            
-            # Priority 3: Load and filter from local_data_path (NEW)
-            elif df_consolidated is None:
-                try:
-                    df_consolidated = self._load_and_filter_local_data()
-                    if df_consolidated is not None:
-                        input_source = f"local_data_path: {self.config.local_data_path}"
-                except FileNotFoundError as e:
-                    logger.warning(f"{e}. Will try fallback methods.")
-
-            # Priority 4: Load and filter from master data path
+            # Load and filter from master data path 
             if df_consolidated is None:
                 try:
                     df_consolidated = self._load_and_filter_data()
@@ -328,14 +306,6 @@ class FeatureEngineeringPipeline:
                         input_source = f"master_data_path: {self.config.master_data_path}"
                 except FileNotFoundError as e:
                     logger.warning(f"{e}. Will try fallback method.")
-
-            # Priority 5: Fallback to legacy file discovery
-            if df_consolidated is None or df_consolidated.empty:
-                logger.info("No data from configured paths. Falling back to legacy file discovery.")
-                latest_file = self.find_latest_consolidated_file()
-                if latest_file:
-                    df_consolidated = self.load_consolidated_data(latest_file)
-                    input_source = f"auto_discovered: {latest_file}"
 
             # Final validation: Ensure data was loaded
             if df_consolidated is None or df_consolidated.empty:
@@ -350,21 +320,15 @@ class FeatureEngineeringPipeline:
             logger.info(f"Data loaded successfully from: {input_source}")
             logger.info(f"Data shape: {df_consolidated.shape}")
             
-            # 2. Extract features
+            # Extract features
             unscaled_features = self.run_feature_extraction(df_consolidated)
             
-            # 3. Scale features
+            # Scale features
             scaled_results = self.run_feature_scaling(unscaled_features)
             
-            # 4. Export all features (commented out for now)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            # export_results = self.export_all_features(
-            #     unscaled_features, 
-            #     scaled_results, 
-            #     timestamp
-            # )
             
-            # 5. Prepare results
+            # Prepare results
             results = {
                 'success': True,
                 'consolidated': df_consolidated,
