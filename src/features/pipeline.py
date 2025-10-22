@@ -67,7 +67,11 @@ class FeatureEngineeringPipeline:
             
         logger.info(f"Loading master data from: {self.config.master_data_path}")
         df = pd.read_parquet(self.config.master_data_path)
-        
+        filtered_df = self._filter_data(df=df)
+            
+        return filtered_df
+    
+    def _filter_data(self, df: pd.DataFrame) -> pd.DataFrame:
         # ensure date column is in datetime type
         df["Date"] = pd.to_datetime(df["Date"])
         
@@ -80,10 +84,6 @@ class FeatureEngineeringPipeline:
         if self.config.filter_commodities:
             df = df[df['Commodity'].isin(self.config.filter_commodities)]
             
-        logger.info(
-            f"Filtered master data from {initial_rows} to {len(df)} rows "
-            f"based on config."
-        )
         return df
     
     def find_latest_consolidated_file(self) -> Optional[Path]:
@@ -297,6 +297,9 @@ class FeatureEngineeringPipeline:
             logger.info("Starting complete feature engineering pipeline")
             
             input_source = "unknown"
+            
+            if df_consolidated is not None:
+                df_consolidated = self._filter_data(df_consolidated)
             
             # Load and filter from master data path 
             if df_consolidated is None:

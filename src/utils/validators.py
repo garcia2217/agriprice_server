@@ -506,16 +506,13 @@ def validate_zip_structure(file) -> Tuple[bool, List[str]]:
                     year_match = re.match(r'^(\d{4})\.xlsx$', excel_file, re.IGNORECASE)
                     if year_match:
                         year = int(year_match.group(1))
-                        if 2020 <= year <= 2030:  # Reasonable year range
-                            excel_files.append({
-                                'provinsi': provinsi,
-                                'kota': kota,
-                                'file': excel_file,
-                                'year': year,
-                                'path': file_path
-                            })
-                        else:
-                            errors.append(f"Invalid year {year} in file {file_path}. Expected years between 2020-2030.")
+                        excel_files.append({
+                            'provinsi': provinsi,
+                            'kota': kota,
+                            'file': excel_file,
+                            'year': year,
+                            'path': file_path
+                        })
                     else:
                         errors.append(f"Invalid Excel filename '{excel_file}' in {file_path}. Expected format: YYYY.xlsx")
                 else:
