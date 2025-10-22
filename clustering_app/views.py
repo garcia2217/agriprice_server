@@ -27,6 +27,7 @@ import psutil
 import time
 import shutil
 import pandas as pd
+import numpy as np
 
 def get_system_metrics():
     return {
@@ -45,7 +46,7 @@ def analyze_view(request):
         if request.content_type == "application/json":
             user_config = json.loads(request.body)
             validation_id = user_config.get("validation_id")
-            algorithm = user_config.get("algorithms")[0]
+            algorithms = user_config.get("algorithms", [])
             num_of_cluster = user_config.get("numClusters")
             cities = user_config.get("locations").get("cities")
             commodities = user_config.get("commodities")
@@ -91,22 +92,46 @@ def analyze_view(request):
         scaled_df = feature_engineering_results.get("scaled_features").get("robust")
         preprocessed_data = feature_engineering_results.get("consolidated")
         
-        clustering_config = ClusteringPipelineConfig.for_api_call(
-            coordinates_path="data/city_coordinates.json",
-            algorithm=algorithm,
-            k=num_of_cluster
-        )
-        
-        pipeline = ClusteringAnalysisPipeline(clustering_config)
-        response = pipeline.run_single_clustering(
-            scaled_data=scaled_df,              
-            preprocessed_data=preprocessed_data,  
-            algorithm=algorithm,
-            k=num_of_cluster,
-            return_format="api"
-        )
-        
-        return JsonResponse(response, safe=False)
+        # Check if this is a comparison request
+        if len(algorithms) > 1:
+            # COMPARISON MODE
+            print(f"Running algorithm comparison with {len(algorithms)} algorithms: {algorithms}")
+            
+            # Create comparison config
+            clustering_config = ClusteringPipelineConfig.for_comparison_call(
+                coordinates_path="data/city_coordinates.json",
+                algorithms=algorithms,
+                k=num_of_cluster
+            )
+            
+            # Run comparison
+            return run_algorithm_comparison(
+                scaled_df=scaled_df,
+                preprocessed_df=preprocessed_data,
+                algorithms=algorithms,
+                k=num_of_cluster,
+                clustering_config=clustering_config
+            )
+        else:
+            # SINGLE ALGORITHM MODE (existing flow)
+            algorithm = algorithms[0] if algorithms else "kmeans"
+            
+            clustering_config = ClusteringPipelineConfig.for_api_call(
+                coordinates_path="data/city_coordinates.json",
+                algorithm=algorithm,
+                k=num_of_cluster
+            )
+            
+            pipeline = ClusteringAnalysisPipeline(clustering_config)
+            response = pipeline.run_single_clustering(
+                scaled_data=scaled_df,              
+                preprocessed_data=preprocessed_data,  
+                algorithm=algorithm,
+                k=num_of_cluster,
+                return_format="api"
+            )
+            
+            return JsonResponse(response, safe=False)
 
     return JsonResponse({"error": "Gunakan metode POST"}, status=400)
 
@@ -127,7 +152,9 @@ def download_pdf(request, analysis_id):
             
             # Check if PDF exists
             if not pdf_path.exists():
-                return JsonResponse({'error': 'PDF not found'}, status=404)
+                pdf_path = Path("temp_pdfs") / f"comparison_{analysis_id}.pdf"
+                if not pdf_path.exists():
+                    return JsonResponse({'error': 'PDF not found'}, status=404)
             
             # Return PDF file
             with open(pdf_path, 'rb') as pdf_file:
@@ -217,6 +244,140 @@ def validate_data_view(request):
             "An unexpected error occurred during validation",
             str(e)
         )
+
+
+def run_algorithm_comparison(
+    scaled_df: pd.DataFrame,
+    preprocessed_df: pd.DataFrame,
+    algorithms: list,
+    k: int,
+    clustering_config: ClusteringPipelineConfig
+) -> JsonResponse:
+    """
+    Run multiple clustering algorithms and compare their performance.
+    
+    Args:
+        scaled_df: Scaled feature DataFrame
+        preprocessed_df: Preprocessed data DataFrame
+        algorithms: List of algorithm names to compare
+        k: Number of clusters
+        clustering_config: Base clustering configuration
+        
+    Returns:
+        JsonResponse with comparison results and PDF path
+    """
+    comparison_results = {}
+    all_results = {}  # Store full results for PDF generation
+    
+    for algorithm in algorithms:
+        try:
+            # Create pipeline for this algorithm
+            pipeline = ClusteringAnalysisPipeline(clustering_config)
+            
+            # Run clustering (return_format="detailed" for metrics)
+            result = pipeline.run_single_clustering(
+                scaled_data=scaled_df,
+                preprocessed_data=preprocessed_df,
+                algorithm=algorithm,
+                k=k,
+                return_format="detailed"
+            )
+            
+            # Store full results for PDF
+            all_results[algorithm] = result
+            
+            # Extract cluster assignments
+            clusters = []
+            cities = []
+            for assignment in result["assignments"]:
+                clusters.append({
+                    "city": assignment["name"],
+                    "cluster": assignment["clusterId"]
+                })
+                cities.append(assignment["name"])
+            
+            # Extract cluster information and create cluster metadata
+            cluster_metadata = []
+            unique_clusters = sorted(set(assignment["clusterId"] for assignment in result["assignments"]))
+            
+            # Default color palette for clusters
+            color_palette = [
+                {"id": 0, "name": "Klaster 0: Pusat Konsumsi Harga Tinggi", "color": "text-red-500", "bgColor": "bg-red-500", "hexColor": "#EF4444"},
+                {"id": 1, "name": "Klaster 1: Lumbung Pangan Stabil", "color": "text-green-500", "bgColor": "bg-green-500", "hexColor": "#22C55E"},
+                {"id": 2, "name": "Klaster 2: Wilayah Transisi", "color": "text-blue-500", "bgColor": "bg-blue-500", "hexColor": "#3B82F6"},
+                {"id": 3, "name": "Klaster 3: Daerah Perbatasan", "color": "text-purple-500", "bgColor": "bg-purple-500", "hexColor": "#8B5CF6"},
+                {"id": 4, "name": "Klaster 4: Zona Khusus", "color": "text-orange-500", "bgColor": "bg-orange-500", "hexColor": "#F97316"},
+                {"id": 5, "name": "Klaster 5: Area Strategis", "color": "text-pink-500", "bgColor": "bg-pink-500", "hexColor": "#EC4899"},
+                {"id": 6, "name": "Klaster 6: Wilayah Utama", "color": "text-indigo-500", "bgColor": "bg-indigo-500", "hexColor": "#6366F1"},
+                {"id": 7, "name": "Klaster 7: Zona Prioritas", "color": "text-teal-500", "bgColor": "bg-teal-500", "hexColor": "#14B8A6"},
+                {"id": 8, "name": "Klaster 8: Daerah Khusus", "color": "text-yellow-500", "bgColor": "bg-yellow-500", "hexColor": "#EAB308"},
+                {"id": 9, "name": "Klaster 9: Wilayah Terpencil", "color": "text-gray-500", "bgColor": "bg-gray-500", "hexColor": "#6B7280"}
+            ]
+            
+            for cluster_id in unique_clusters:
+                if cluster_id < len(color_palette):
+                    cluster_metadata.append(color_palette[cluster_id])
+                else:
+                    # Fallback for additional clusters
+                    cluster_metadata.append({
+                        "id": cluster_id,
+                        "name": f"Klaster {cluster_id}: Cluster {cluster_id}",
+                        "color": "text-gray-500",
+                        "bgColor": "bg-gray-500",
+                        "hexColor": "#6B7280"
+                    })
+            
+            # Build comparison response
+            comparison_results[algorithm] = {
+                "clusters": cluster_metadata,
+                "cities": result["assignments"],  # Keep original assignments with lat/lon
+                "silhouette_score": result["metrics"]["silhouette_score"],
+                "dbi_score": result["metrics"]["davies_bouldin_index"],
+                "computation_time": result["metadata"].get("execution_time_seconds", 0)
+            }
+            
+        except Exception as e:
+            print(f"Error running {algorithm}: {e}")
+            comparison_results[algorithm] = {
+                "error": str(e),
+                "clusters": [],
+                "cities": [],
+                "silhouette_score": 0,
+                "dbi_score": float('inf'),
+                "computation_time": 0
+            }
+    
+    # Generate comparison PDF
+    analysis_id = f"anl_{int(time.time())}"
+    temp_pdfs_dir = Path("temp_pdfs")
+    temp_pdfs_dir.mkdir(exist_ok=True)
+    pdf_path = temp_pdfs_dir / f"comparison_{analysis_id}.pdf"
+    
+    # Create visualization service for PDF generation
+    from src.visualization.pipeline import ClusterVisualizationService
+    viz_service = ClusterVisualizationService(
+        scaled_df=scaled_df,
+        preprocessed_df=preprocessed_df,
+        labels=np.array([]),  # Dummy labels for initialization
+        model=None,  # Dummy model
+        silhouette_avg=0.0,  # Dummy score
+        algorithm_name="comparison",
+        output_path=temp_pdfs_dir
+    )
+    
+    # Generate comparison PDF
+    viz_service.generate_comparison_pdf(
+        comparison_results=all_results,
+        output_path=pdf_path,
+        k=k,
+        algorithm_names=algorithms
+    )
+    
+    return JsonResponse({
+        "analysis_id": analysis_id,
+        "years": [str(year) for year in range(2020, 2025)],  # Default years, could be extracted from data
+        "algorithm_results": comparison_results
+    }, safe=False)
         
 def cleanup_old_pdfs(hours: int = 24):
     """

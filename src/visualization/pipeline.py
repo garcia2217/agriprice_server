@@ -2,6 +2,7 @@ import sys
 import os
 import logging
 import time
+import shutil
 import warnings
 import json
 import folium
@@ -33,11 +34,13 @@ from sklearn.metrics import silhouette_score, davies_bouldin_score, silhouette_s
 
 # PDF generation imports
 from reportlab.pdfgen import canvas
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, PageBreak, KeepTogether
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, PageBreak, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import inch
 from reportlab.lib.utils import ImageReader
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
+from reportlab.lib import colors
 
 # Selenium for map conversion
 from selenium import webdriver
@@ -78,6 +81,11 @@ def safe_plot_generation(plot_name: str):
         return wrapper
     return decorator
 
+ALGORITHM_NAME_MAP: Dict[str, str] = {
+    "kmeans": "K-Means",
+    "fcm": "Fuzzy C-Means",
+    "spectral": "Spectral Clustering",
+}
 
 class ClusterVisualizationService:
     """
@@ -114,7 +122,10 @@ class ClusterVisualizationService:
             output_path: The directory path to save all visualization files.
         """
         self.scaled_df = scaled_df
-        self.X = scaled_df.drop(columns=["City"])
+        if "City" in scaled_df.columns:
+            self.X = scaled_df.drop(columns=["City"])
+        else:
+            self.X = scaled_df
         self.preprocessed_df = preprocessed_df
         self.labels = labels
         self.model = model
@@ -186,6 +197,8 @@ class ClusterVisualizationService:
              temp_dir / "silhouette_plot.png"),
             ('scatter', '2D Scatter Plot', self._generate_scatter_plot, 
              temp_dir / "scatter_plot.png"),
+            ('correlation', 'Correlation Heatmap', self._generate_correlation_heatmap,
+             temp_dir / "correlation_heatmap.png"),
             ('boxplot', 'Box Plot', self._generate_box_plot, 
              temp_dir / "boxplot.png"),
             ('linechart', 'Line Chart', self._generate_line_chart, 
@@ -319,7 +332,7 @@ class ClusterVisualizationService:
 
         commodities = sorted(merged_df["Commodity"].unique())
         n_commodities = len(commodities)
-        
+
         print(f"📊 Plotting {n_commodities} commodities across {len(self._unique_clusters)} clusters")
 
         n_cols = 2
@@ -350,7 +363,7 @@ class ClusterVisualizationService:
                 palette=self.cluster_colors,
                 fliersize=3, linewidth=1.3, showmeans=True,
                 meanprops=dict(marker='D', markerfacecolor='white', 
-                             markeredgecolor='black', markersize=5)
+                            markeredgecolor='black', markersize=5)
             )
             
             ax.set_title(f"{commodity}", fontsize=14, weight='bold', pad=12)
@@ -388,7 +401,7 @@ class ClusterVisualizationService:
         plt.tight_layout()
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
         plt.close()
-        
+
         return output_path
 
     @safe_plot_generation("Line Chart")
@@ -407,7 +420,7 @@ class ClusterVisualizationService:
         cluster_agg_ym = (
             merged_df[merged_df["Commodity"].isin(commodities)]
             .groupby(["Commodity", "YearMonth", "Cluster"], as_index=False)["Price"]
-            .mean()
+                .mean()
         )
 
         # Create plot
@@ -486,7 +499,7 @@ class ClusterVisualizationService:
         angles += angles[:1]
 
         fig, ax = plt.subplots(figsize=(12, 12), subplot_kw=dict(polar=True))
-
+        
         for cluster_id, row in radar_df.iterrows():
             values = row.tolist()
             values += values[:1]
@@ -501,6 +514,47 @@ class ClusterVisualizationService:
 
         plt.title('Normalized Commodity Price Profile by Cluster', size=20, y=1.1)
         plt.legend(title='Clusters', loc='upper right', bbox_to_anchor=(1.3, 1.1))
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        return output_path
+
+    @safe_plot_generation("Correlation Heatmap")
+    def _generate_correlation_heatmap(self, output_path: Path) -> Path:
+        """Generate a correlation heatmap consistent with APIResponseFormatter.format_correlation_matrix.
+
+        This uses the preprocessed_df to build a pivot table of prices per commodity,
+        then computes Pearson correlation and plots it with seaborn as a heatmap.
+        """
+        merged_df = self.merged_df.copy()
+        
+        # Validate required columns
+        required_cols = ['City', 'Date', 'Commodity', 'Price']
+        if any(col not in merged_df.columns for col in required_cols):
+            print("  ⚠️ Skipping heatmap: missing required columns in merged_df")
+            return None
+        
+        # Prepare pivot: rows are (City, Date), columns are Commodity, values are Price (mean for duplicates)
+        merged_df['Date'] = pd.to_datetime(merged_df['Date'], errors='coerce')
+        pivot_df = merged_df.pivot_table(
+            index=['City', 'Date'],
+            columns='Commodity',
+            values='Price',
+            aggfunc='mean'
+        )
+        
+        # Compute Pearson correlation
+        corr = pivot_df.corr(method='pearson')
+        
+        # Plot heatmap with correlation values displayed in cells
+        plt.figure(figsize=(12, 9))
+        sns.heatmap(
+            corr.round(2), cmap='RdBu_r', vmin=-1, vmax=1, center=0,
+            annot=True, fmt='.2f', annot_kws={'size': 8},
+            linewidths=0.5, linecolor='white', cbar_kws={'shrink': 0.8}
+        )
+        plt.title('Correlation Matrix of Commodity Prices', fontsize=14, weight='bold')
+        plt.tight_layout()
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
         plt.close()
         
@@ -543,7 +597,7 @@ class ClusterVisualizationService:
             
             print(f"  📍 Found coordinates for {len(df_map_data)} cities")
             return df_map_data
-            
+
         except FileNotFoundError:
             print(f"  ❌ File not found: {coordinates_filepath}")
             return pd.DataFrame()
@@ -656,123 +710,550 @@ class ClusterVisualizationService:
         """Generate cluster summary Excel file."""
         try:
             df_cluster_summary = self.cluster_map.groupby("Cluster")['City'].agg(
-                number_of_members='count',
-                members=lambda cities: ', '.join(sorted(cities))
-            ).reset_index().sort_values("Cluster").set_index("Cluster")
-            
+            number_of_members='count',
+            members=lambda cities: ', '.join(sorted(cities))
+        ).reset_index().sort_values("Cluster").set_index("Cluster")
+        
             output_path = self.output_path / "cluster_members_summary.xlsx"
             df_cluster_summary.to_excel(output_path)
             print(f"  ✓ Cluster summary saved to {output_path.name}")
         except Exception as e:
             print(f"  ⚠️ Could not generate cluster summary: {e}")
 
-    def generate_pdf_report(self, output_pdf_path: Path) -> Optional[Path]:
+    def generate_pdf_report(
+        self,
+        output_pdf_path: Path
+    ) -> Optional[Path]:
         """
-        Generate PDF report with all available visualizations.
+        Generates a PDF report with all available visualizations.
+
         Continues even if some plots failed to generate.
+
+        Args:
+            output_pdf_path: The file path to save the final PDF report.
+
+        Returns:
+            The path to the generated PDF, or None if generation failed.
         """
-        print("\n📄 Generating PDF report...")
+        print("\n📄 Membuat laporan PDF...")
         
-        temp_plots_dir = output_pdf_path.parent / "temp_plots"
+        # --- Setup Temp Directory ---
+        temp_plots_dir: Path = output_pdf_path.parent / "temp_plots"
         temp_plots_dir.mkdir(exist_ok=True)
         
         try:
-            # Generate all visualizations
-            image_paths = self.generate_all_visualizations(temp_plots_dir)
+            # --- Generate all visualizations ---
+            # NOTE: self.generate_all_visualizations must return a Dict[str, Path]
+            image_paths: Dict[str, Path] = self.generate_all_visualizations(temp_plots_dir)
             
             if not image_paths:
-                print("❌ No visualizations were generated. Cannot create PDF.")
+                print("❌ Tidak ada visualisasi yang dibuat. PDF tidak dapat dibuat.")
                 return None
             
-            # Create PDF
-            doc = SimpleDocTemplate(str(output_pdf_path), pagesize=A4)
-            story = []
-            styles = getSampleStyleSheet()
-            max_img_width = doc.width
-            max_img_height = 4.5 * inch
+            # --- Create PDF document ---
+            doc = SimpleDocTemplate(
+                str(output_pdf_path),
+                pagesize=A4,
+                leftMargin=0.75 * inch,
+                rightMargin=0.75 * inch,
+                topMargin=0.75 * inch,
+                bottomMargin=0.75 * inch
+            )
+            story: List[Any] = []
+            styles: Dict[str, ParagraphStyle] = getSampleStyleSheet()
+            
+            # === MODIFIED: Define image heights with increased large_height ===
+            max_img_width: float = doc.width
+            # Height for large, single-page charts - INCREASED from 6.0 to 7.5
+            large_height: float = 7.5 * inch 
+            # Height for charts paired on a single page
+            compact_height: float = 3.5 * inch 
 
-            def make_image_flowable(img_path: Path) -> Optional[Image]:
+            def make_image_flowable(
+                img_path: Path,
+                max_height: float
+            ) -> Optional[Image]:
                 """Create an Image flowable with proper scaling."""
                 try:
                     ir = ImageReader(str(img_path))
                     orig_w, orig_h = ir.getSize()
+                    
                     if orig_w == 0 or orig_h == 0:
-                        return Image(str(img_path), width=max_img_width, height=max_img_height)
+                        # Fallback for corrupted images
+                        return Image(
+                            str(img_path), 
+                            width=max_img_width, 
+                            height=max_height
+                        )
+                    
                     scale_w = max_img_width / orig_w
-                    scale_h = max_img_height / orig_h
+                    scale_h = max_height / orig_h
                     scale = min(scale_w, scale_h, 1.0)
+                    
                     new_w = orig_w * scale
                     new_h = orig_h * scale
-                    return Image(str(img_path), width=new_w, height=new_h)
+                    
+                    img = Image(str(img_path), width=new_w, height=new_h)
+                    img.hAlign = 'CENTER'
+                    return img
+                
                 except Exception as e:
-                    print(f"  ⚠️ Could not process image {img_path.name}: {e}")
+                    print(f" ⚠️ Gagal memproses gambar {img_path.name}: {e}")
                     return None
             
+            # --- Title ---
+            title_style = ParagraphStyle(
+                'CustomTitle',
+                parent=styles['Title'],
+                fontSize=24,
+                textColor=colors.black,
+                spaceAfter=20,
+                alignment=TA_CENTER
+            )
+            title = Paragraph("Laporan Analisis Clustering", title_style)
+            story.append(title)
+            story.append(Spacer(1, 0.2 * inch))
+            
+            # --- Metadata Box ---
+            metadata_style = ParagraphStyle(
+                'MetadataStyle',
+                parent=styles['Normal'],
+                fontSize=10,
+                leading=14,
+                leftIndent=0,
+                rightIndent=10,
+                spaceAfter=6
+            )
+            
+            metadata_items: List[str] = [
+                f"<b>Algoritma:</b> {self.algorithm_name.title()}",
+                f"<b>Jumlah Cluster:</b> {len(self._unique_clusters)}",
+                f"<b>Skor Silhouette:</b> {self.silhouette_avg:.4f}",
+                f"<b>Dibuat pada:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            ]
+            
+            for item in metadata_items:
+                story.append(Paragraph(item, metadata_style))
+            
+            story.append(Spacer(1, 0.3 * inch))
+            
+            # --- Cluster Membership Table (Unchanged) ---
+            section_style = ParagraphStyle(
+                'SectionHeading',
+                parent=styles['Heading2'],
+                fontSize=14,
+                textColor=colors.black,
+                spaceAfter=12,
+                spaceBefore=6,
+                alignment=TA_CENTER
+            )
+            
+            table_title_style = section_style.clone('TableTitle')
+            table_title_style.alignment = TA_LEFT
+            
+            story.append(Paragraph(
+                "Detail Keanggotaan Cluster", 
+                table_title_style
+            ))
+            story.append(Spacer(1, 0.1 * inch))
+            
+            cell_style = ParagraphStyle(
+                'CellStyle',
+                parent=styles['Normal'],
+                fontSize=8,
+                leading=10,
+                wordWrap='CJK',
+            )
+            
+            header_style = ParagraphStyle(
+                'HeaderStyle',
+                parent=styles['Normal'],
+                fontSize=9,
+                fontName='Helvetica-Bold',
+                textColor=colors.whitesmoke,
+            )
+            
+            cluster_data: List[List[Paragraph]] = [
+                [
+                    Paragraph("Cluster", header_style),
+                    Paragraph("Kota", header_style),
+                    Paragraph("Jumlah", header_style)
+                ]
+            ]
+            
+            for cluster_id in sorted(self._unique_clusters):
+                # Mock city extraction for demonstration
+                cluster_cities: List[str] = [city for city, label in zip(self.scaled_df['City'], self.labels) if label == cluster_id]
+                cities_text: str = ", ".join(cluster_cities)
+                
+                cluster_data.append([
+                    Paragraph(str(cluster_id), cell_style),
+                    Paragraph(cities_text, cell_style),
+                    Paragraph(str(len(cluster_cities)), cell_style)
+                ])
+                
+            table = Table(
+                cluster_data,
+                colWidths=[0.8 * inch, 4.7 * inch, 0.8 * inch],
+                repeatRows=1,
+                hAlign='LEFT',
+            )
+            table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.black),
+                ('ALIGN', (0, 0), (0, -1), 'CENTER'),
+                ('ALIGN', (1, 0), (1, -1), 'LEFT'),
+                ('ALIGN', (2, 0), (2, -1), 'CENTER'),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('TOPPADDING', (0, 0), (-1, -1), 6),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                ('LEFTPADDING', (0, 0), (-1, -1), 6),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+                ('GRID', (0, 0), (-1, -1), 1, colors.grey),
+                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [
+                    colors.white,
+                    colors.HexColor('#F8F9FA')
+                ])
+            ]))
+            story.append(table)
+            
+            # === Chart Layout - Still using the updated structure ===
+            # (Title, path, height_variable, force_new_page_before, add_spacer_after)
+            charts: List[tuple[str, Optional[Path], float, bool, bool]] = [
+                # PAGE 1: Silhouette + Scatter (Compacted)
+                (
+                    "Analisis Silhouette",
+                    image_paths.get('silhouette'),
+                    compact_height, 
+                    True,
+                    False
+                ),
+                (
+                    "Plot Sebar PCA",
+                    image_paths.get('scatter'),
+                    compact_height, 
+                    False,
+                    False
+                ),
+                # PAGE 2: Correlation Heatmap (Large)
+                (
+                    "Korelasi Antar Komoditas",
+                    image_paths.get('correlation'),
+                    large_height,
+                    True,
+                    False
+                ),
+                # PAGE 3: Boxplot (Large - now 7.5 * inch)
+                (
+                    "Distribusi Harga per Cluster",
+                    image_paths.get('boxplot'),
+                    large_height, # Uses the new, larger height
+                    True,
+                    False
+                ),
+                # PAGE 4: Linechart (Large - now 7.5 * inch)
+                (
+                    "Tren Harga Seiring Waktu",
+                    image_paths.get('linechart'),
+                    large_height, # Uses the new, larger height
+                    True,
+                    False
+                ),
+                # PAGE 5: Radar + Map (Compacted)
+                (
+                    "Karakteristik Cluster (Grafik Radar)",
+                    image_paths.get('radar'),
+                    compact_height, 
+                    True,
+                    True # NEW: Add spacer after this chart
+                ),
+                (
+                    "Distribusi Geografis",
+                    image_paths.get('map'),
+                    compact_height, 
+                    False,
+                    False
+                )
+            ]
+            
+            charts_added: int = 0
+            # === MODIFIED: Loop to handle the new tuple and add spacer ===
+            for title_text, image_path, chart_height, force_new_page, add_spacer_after in charts:
+                if image_path and image_path.exists():
+                    img: Optional[Image] = make_image_flowable(
+                        image_path,
+                        max_height=chart_height
+                    )
+                    if img is not None:
+                        if force_new_page:
+                            story.append(PageBreak())
+                        
+                        heading = Paragraph(title_text, section_style)
+                        story.append(heading)
+                        story.append(Spacer(1, 0.1 * inch))
+                        story.append(img)
+                        story.append(Spacer(1, 0.2 * inch))
+                        
+                        if add_spacer_after:
+                            # NEW: Add significant space after the Radar Chart
+                            story.append(Spacer(1, 0.5 * inch)) 
+                        
+                        charts_added += 1
+                else:
+                    print(f" ⚠️ Melewatkan {title_text} - tidak tersedia")
+            
+            if charts_added == 0:
+                story.append(Paragraph(
+                    "Tidak ada visualisasi yang dapat dibuat.",
+                    styles['Normal']
+                ))
+                print(" ⚠️ Tidak ada grafik yang ditambahkan ke PDF")
+            
+            # --- Build PDF ---
+            doc.build(story)
+            
+            print(f"✅ Laporan PDF disimpan sebagai '{output_pdf_path.name}' dengan {charts_added} grafik")
+            return output_pdf_path
+            
+        except Exception as e:
+            print(f"❌ Gagal membuat PDF: {e}")
+            # Ensure logging is imported or available in the scope
+            logging.error(f"Kesalahan pembuatan PDF: {e}", exc_info=True)
+            return None
+        
+        finally:
+            # Clean up temporary plots
+            if temp_plots_dir.exists():
+                shutil.rmtree(temp_plots_dir)
+        
+    def generate_comparison_pdf(
+        self,
+        comparison_results: Dict[str, Any],
+        output_path: Path,
+        k: int,
+        algorithm_names: List[str]
+    ) -> Path:
+        """
+        Generate PDF report for algorithm comparison in Bahasa Indonesia, 
+        using formal algorithm names.
+        
+        Args:
+            comparison_results: Dictionary with algorithm comparison data
+            output_path: Path to save PDF
+            k: Number of clusters
+            algorithm_names: List of internal algorithm keys (e.g., "kmeans")
+            
+        Returns:
+            Path to generated PDF, or None on failure.
+        """
+        print("\n📄 Membuat laporan PDF Perbandingan Algoritma...")
+        
+        try:
+            # Create PDF
+            doc = SimpleDocTemplate(str(output_path), pagesize=A4)
+            story: List[Any] = []
+            styles: Dict[str, ParagraphStyle] = getSampleStyleSheet()
+            
             # Title
-            title = Paragraph("Clustering Analysis Report", styles['Title'])
+            title = Paragraph("Laporan Perbandingan Algoritma", styles['Title'])
             story.append(title)
             story.append(Spacer(12, 12))
             
-            # Add metadata
+            # --- Metadata ---
+            # Get user-friendly, mapped names for display
+            display_names = [ALGORITHM_NAME_MAP.get(name, name) for name in algorithm_names]
+            
             metadata = f"""
-            <b>Algorithm:</b> {self.algorithm_name.title()}<br/>
-            <b>Number of Clusters:</b> {len(self._unique_clusters)}<br/>
-            <b>Silhouette Score:</b> {self.silhouette_avg:.4f}<br/>
-            <b>Generated:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+            <b>Jumlah Klaster:</b> {k}<br/>
+            <b>Algoritma yang Dibandingkan:</b> {', '.join(display_names)}<br/>
+            <b>Dibuat Pada:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             """
             story.append(Paragraph(metadata, styles['Normal']))
             story.append(Spacer(12, 24))
             
-            # Define chart ordering
-            charts = [
-                ("Silhouette Analysis", image_paths.get('silhouette')),
-                ("PCA Scatter Plot", image_paths.get('scatter')),
-                ("Price Distribution", image_paths.get('boxplot')),
-                ("Price Trends", image_paths.get('linechart')),
-                ("Radar Chart", image_paths.get('radar')),
-                ("Geographic Distribution", image_paths.get('map'))
-            ]
+            # --- Performance Metrics Table ---
+            story.append(Paragraph("Perbandingan Metrik Kinerja", styles['Heading2']))
+            story.append(Spacer(1, 0.1*inch))
             
-            charts_added = 0
-            for title_text, image_path in charts:
-                if image_path and image_path.exists():
-                    img = make_image_flowable(image_path)
-                    if img is not None:
-                        # Force scatter plot to start on new page
-                        if title_text == "PCA Scatter Plot":
-                            story.append(PageBreak())
-                        
-                        heading = Paragraph(title_text, styles['Heading2'])
-                        story.append(KeepTogether([heading, Spacer(1, 6), img]))
-                        story.append(Spacer(12, 12))
-                        charts_added += 1
+            # Create performance table data (Localized headers)
+            perf_data: List[List[str]] = [[
+                "Algoritma", "Skor Silhouette", "Skor DBI", "Waktu Komputasi (detik)"
+            ]]
+            
+            for algorithm_key in algorithm_names:
+                display_name = ALGORITHM_NAME_MAP.get(algorithm_key, algorithm_key)
+                
+                if algorithm_key in comparison_results and "error" not in comparison_results[algorithm_key]:
+                    result = comparison_results[algorithm_key]
+                    metrics = result.get('metrics', {})
+                    metadata = result.get('metadata', {})
+                    
+                    dbi_value = metrics.get('davies_bouldin_index', metrics.get('dbi_score', 0))
+                    
+                    # Robust formatting
+                    silhouette_str = f"{metrics.get('silhouette_score', 0):.4f}" if isinstance(metrics.get('silhouette_score'), (int, float)) else "Tidak Tersedia"
+                    dbi_str = f"{dbi_value:.4f}" if isinstance(dbi_value, (int, float)) else "Tidak Tersedia"
+                    time_str = f"{metadata.get('execution_time_seconds', 0):.2f}" if isinstance(metadata.get('execution_time_seconds'), (int, float)) else "Tidak Tersedia"
+
+                    perf_data.append([
+                        display_name,
+                        silhouette_str,
+                        dbi_str,
+                        time_str
+                    ])
                 else:
-                    print(f"  ⚠️ Skipping {title_text} - not available")
+                    perf_data.append([
+                        display_name,
+                        "Kesalahan",
+                        "Kesalahan", 
+                        "Kesalahan"
+                    ])
             
-            if charts_added == 0:
-                story.append(Paragraph("No visualizations could be generated.", styles['Normal']))
-                print("  ⚠️ No charts were added to the PDF")
+            # Create and style performance table
+            perf_table = Table(perf_data, colWidths=[1.5*inch, 1.5*inch, 1.5*inch, 1.5*inch])
+            perf_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#343A40')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 10),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F8F9FA')])
+            ]))
+            story.append(perf_table)
+            story.append(Spacer(1, 0.3*inch))
+            
+            # --- Cluster Membership Comparison ---
+            story.append(Paragraph("Perbandingan Keanggotaan Klaster", styles['Heading2']))
+            story.append(Spacer(1, 0.1*inch))
+            
+            # Create a custom style for wrapping text in cells
+            cell_style = ParagraphStyle(
+                'CellStyle',
+                parent=styles['Normal'],
+                fontSize=7,
+                leading=9,
+                wordWrap='CJK',
+            )
+            
+            for algorithm_key in algorithm_names:
+                display_name = ALGORITHM_NAME_MAP.get(algorithm_key, algorithm_key)
+
+                if algorithm_key in comparison_results and "error" not in comparison_results[algorithm_key]:
+                    result = comparison_results[algorithm_key]
+                    
+                    # Cluster data processing (kept intact for functionality)
+                    clusters = result.get('clusters')
+                    if clusters is None and 'assignments' in result:
+                        clusters = [
+                            {"city": a.get('name', ''), "cluster": a.get('clusterId', None)}
+                            for a in result['assignments']
+                        ]
+                    if clusters is None:
+                        clusters = []
+                    
+                    cluster_groups: Dict[Any, List[str]] = {}
+                    for cluster_info in clusters:
+                        cluster_id = cluster_info.get('cluster', 0)
+                        city = cluster_info.get('city', '')
+                        if cluster_id not in cluster_groups:
+                            cluster_groups[cluster_id] = []
+                        cluster_groups[cluster_id].append(city)
+                    
+                    # Create cluster membership table title (using mapped name)
+                    story.append(Paragraph(
+                        f"{display_name} Klaster:", 
+                        styles['Heading3']
+                    ))
+                    story.append(Spacer(1, 0.05*inch))
+                    
+                    # Create cluster data with localized headers
+                    cluster_data: List[List[Paragraph]] = [
+                        [
+                            Paragraph("<b>Klaster</b>", styles['Normal']),
+                            Paragraph("<b>Kota-kota</b>", styles['Normal']),
+                            Paragraph("<b>Jumlah</b>", styles['Normal'])
+                        ]
+                    ]
+                    
+                    for cluster_id in sorted(cluster_groups.keys()):
+                        cities = cluster_groups[cluster_id]
+                        cities_text = ", ".join(cities)
+                        
+                        cluster_data.append([
+                            Paragraph(str(cluster_id), cell_style),
+                            Paragraph(cities_text, cell_style),
+                            Paragraph(str(len(cities)), cell_style)
+                        ])
+                    
+                    # Create cluster table
+                    cluster_table = Table(
+                        cluster_data, 
+                        colWidths=[0.8*inch, 4.2*inch, 0.8*inch],
+                        repeatRows=1
+                    )
+                    cluster_table.setStyle(TableStyle([
+                        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#E9ECEF')),
+                        ('ALIGN', (0, 0), (0, -1), 'CENTER'),
+                        ('ALIGN', (1, 0), (1, -1), 'LEFT'),
+                        ('ALIGN', (2, 0), (2, -1), 'CENTER'),
+                        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                        ('FONTSIZE', (0, 0), (-1, 0), 8),
+                        ('BOTTOMPADDING', (0, 0), (-1, 0), 6),
+                        ('TOPPADDING', (0, 1), (-1, -1), 4),
+                        ('BOTTOMPADDING', (0, 1), (-1, -1), 4),
+                        ('LEFTPADDING', (0, 0), (-1, -1), 4),
+                        ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+                        ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#DEE2E6')),
+                        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F8F9FA')])
+                    ]))
+                    story.append(cluster_table)
+                    story.append(Spacer(1, 0.2*inch))
+            
+            # --- Summary and Recommendations ---
+            story.append(Paragraph("Ringkasan dan Rekomendasi", styles['Heading2']))
+            story.append(Spacer(1, 0.1*inch))
+            
+            # Find best performing algorithm
+            best_algorithm_key: Optional[str] = None
+            best_silhouette: float = -1
+            
+            for algorithm in algorithm_names:
+                if algorithm in comparison_results and "error" not in comparison_results[algorithm]:
+                    result = comparison_results[algorithm]
+                    metrics = result.get('metrics', {})
+                    silhouette = metrics.get('silhouette_score', result.get('silhouette_score', 0)) 
+                    if isinstance(silhouette, (int, float)) and silhouette > best_silhouette:
+                        best_silhouette = silhouette
+                        best_algorithm_key = algorithm
+            
+            if best_algorithm_key:
+                best_display_name = ALGORITHM_NAME_MAP.get(best_algorithm_key, best_algorithm_key)
+                
+                summary_text = f"""
+                <b>Algoritma Kinerja Terbaik:</b> {best_display_name}<br/>
+                <b>Skor Silhouette Terbaik:</b> {best_silhouette:.4f}<br/><br/>
+                
+                <b>Rekomendasi:</b> Berdasarkan skor silhouette, {best_display_name} 
+                menunjukkan kinerja pengklasteran terbaik untuk dataset ini dengan {k} klaster.
+                """
+            else:
+                summary_text = """
+                <b>Catatan:</b> Gagal menentukan algoritma kinerja terbaik karena adanya kesalahan dalam perbandingan.
+                """
+            
+            story.append(Paragraph(summary_text, styles['Normal']))
             
             # Build PDF
             doc.build(story)
             
-            # Clean up temporary plots
-            import shutil
-            if temp_plots_dir.exists():
-                shutil.rmtree(temp_plots_dir)
-            
-            print(f"✅ PDF report saved as '{output_pdf_path.name}' with {charts_added} charts")
-            return output_pdf_path
+            print(f"✅ Laporan PDF Perbandingan disimpan sebagai '{output_path.name}'")
+            return output_path
             
         except Exception as e:
-            print(f"❌ Error generating PDF: {e}")
-            logging.error(f"PDF generation error: {e}", exc_info=True)
-            
-            # Clean up on error
-            if temp_plots_dir.exists():
-                import shutil
-                shutil.rmtree(temp_plots_dir)
-            
+            print(f"❌ Gagal membuat PDF perbandingan: {e}")
+            logging.error(f"Comparison PDF generation error: {e}", exc_info=True)
             return None
 
 
@@ -797,7 +1278,7 @@ def main():
     # Clean data
     if "Unnamed: 0" in scaled_df.columns:
         scaled_df = scaled_df.drop(columns=["Unnamed: 0"])
-    
+        
     X = scaled_df.drop(columns=["City"])
     
     # --- 2. Run Clustering ---
@@ -809,9 +1290,9 @@ def main():
     model = KMeans(n_clusters=n_clusters_to_run, random_state=42, n_init=10)
     labels = model.fit_predict(X)
     silhouette_avg = silhouette_score(X, labels)
-    
-    print(f"✓ Clustering complete. Silhouette Score: {silhouette_avg:.4f}")
 
+    print(f"✓ Clustering complete. Silhouette Score: {silhouette_avg:.4f}")
+    
     # --- 3. Generate Visualizations ---
     output_directory = SAVE_DIR / algorithm_to_run / f"k{n_clusters_to_run}"
     

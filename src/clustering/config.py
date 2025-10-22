@@ -198,6 +198,37 @@ class ClusteringPipelineConfig:
             enable_file_logging=False
         )
     
+    @classmethod
+    def for_comparison_call(
+        cls,
+        coordinates_path: Union[str, Path],
+        algorithms: List[str],
+        k: int
+    ) -> 'ClusteringPipelineConfig':
+        """
+        Create configuration optimized for algorithm comparison API calls.
+        
+        Args:
+            coordinates_path: Path to city coordinates file
+            algorithms: List of clustering algorithms to compare
+            k: Number of clusters
+            
+        Returns:
+            ClusteringPipelineConfig instance for comparison use
+        """
+        return cls(
+            coordinates_path=Path(coordinates_path),
+            algorithms=algorithms,
+            k_range=range(k, k + 1),
+            save_outputs=False,
+            save_plots=False,
+            save_excel=False,
+            save_metrics=False,
+            api_mode=True,
+            return_format="comparison",
+            enable_file_logging=False
+        )
+    
     def get_algorithm_params(self, algorithm: str) -> Dict[str, Any]:
         """
         Get parameters for specific algorithm.
