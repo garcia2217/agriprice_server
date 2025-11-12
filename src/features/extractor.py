@@ -220,7 +220,6 @@ class FeatureExtractor:
         
         return features
     
-    
     def create_feature_matrix(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Create the feature matrix from consolidated time series data.

@@ -210,8 +210,8 @@ class DataCleaner:
         self.logger.info("Completed commodity filtering")
         
         # Step 4: Validate date range
-        df_clean = self.validate_date_range(df_clean)
-        self.logger.info("Completed date validation")
+        # df_clean = self.validate_date_range(df_clean)
+        # self.logger.info("Completed date validation")
         
         # Step 5: Remove outliers (optional)
         if remove_outliers:

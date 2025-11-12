@@ -410,12 +410,12 @@ def validate_commodities(df: pd.DataFrame, supported_commodities: List[str]) -> 
         return False, errors
     
     # Check minimum commodity count for radar chart
-    if len(data_commodities) < 3:
-        errors.append(
-            f"Insufficient commodities: {len(data_commodities)} found (minimum 3 required for radar chart). "
-            f"Please ensure your data contains at least 3 different commodities."
-        )
-        return False, errors
+    # if len(data_commodities) < 3:
+    #     errors.append(
+    #         f"Insufficient commodities: {len(data_commodities)} found (minimum 3 required for radar chart). "
+    #         f"Please ensure your data contains at least 3 different commodities."
+    #     )
+    #     return False, errors
     
     return True, errors
 

@@ -391,7 +391,7 @@ def cleanup_old_pdfs(hours: int = 24):
         cutoff_time = time.time() - (hours * 60 * 60)
         cleaned_count = 0
         
-        for pdf_file in temp_pdfs_dir.glob("analysis_*.pdf"):
+        for pdf_file in temp_pdfs_dir.glob("*.pdf"):
             if pdf_file.stat().st_mtime < cutoff_time:
                 pdf_file.unlink()
                 cleaned_count += 1
